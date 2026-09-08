@@ -3352,6 +3352,7 @@ private val fallbackSupportedKmis = listOf(
     "android14-6.1",
     "android15-6.6",
     "android16-6.12",
+    "android17-6.18",
 )
 
 private val kmiNameRegex = Regex("""^android\d+-\d+(?:\.\d+)?$""")

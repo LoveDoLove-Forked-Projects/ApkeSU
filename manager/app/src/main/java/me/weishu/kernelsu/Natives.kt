@@ -7,6 +7,7 @@ import androidx.compose.runtime.Immutable
 import kotlinx.parcelize.Parcelize
 import kotlinx.serialization.Serializable
 import me.weishu.kernelsu.Natives.Profile.RootProfileFlag
+import me.weishu.kernelsu.ui.util.rootAvailable
 
 /**
  * @author weishu
@@ -45,6 +46,9 @@ object Natives {
         external get
 
     val isLkmMode: Boolean
+        external get
+
+    val isLkmBundled: Boolean
         external get
 
     val isLateLoadMode: Boolean

@@ -48,6 +48,8 @@
     <string name="home_click_to_install">点击安装</string>
     <string name="home_working">ApkeSU 已激活</string>
     <string name="home_working_version">已安装版本：%s</string>
+    <string name="home_lkm_update_available">内嵌 LKM 有可用更新，点击更新</string>
+    <string name="home_lkm_custom">自定义</string>
     <string name="root_state_driver_disconnected">驱动未连接</string>
     <string name="root_state_manager_unregistered">管理器未注册</string>
     <string name="root_state_daemon_error">守护进程异常</string>
@@ -178,8 +180,11 @@
     <string name="uapi_mismatch">管理器 uapi 版本 (%1$d) 与 ApkeSU 驱动 uapi 版本 (%2$d) 不匹配。</string>
     <string name="require_manager_version">当前 ApkeSU 管理器版本 %1$d 过低，ApkeSU 无法正常工作. 请将 ApkeSU 管理器版本升级至 %2$d 或以上!</string>
     <string name="require_kernel_version">当前 ApkeSU 版本 %1$d 过低，管理器无法正常工作，请将内核 ApkeSU 版本升级至 %2$d 或以上！</string>
+    <string name="require_kernel_version_gki">需要更新内核</string>
     <string name="settings_umount_modules_default">默认卸载模块</string>
     <string name="settings_umount_modules_default_summary">App Profile 中「卸载模块」的全局默认值，如果启用，会将未自定义 Profile 的应用移除所有模块针对系统的修改</string>
+    <string name="settings_check_update">检查更新</string>
+    <string name="settings_check_update_summary">在应用启动后自动检查是否有最新版本</string>
     <string name="settings_builtin_mount">启用内置挂载</string>
     <string name="settings_builtin_mount_summary">安装并启用内置 Hybrid Mount 元模块。</string>
     <string name="settings_builtin_mount_conflict_summary">已有其它元模块正在启用：%s</string>

@@ -11,6 +11,8 @@
     <string name="home_install_preparing">Preparing install</string>
     <string name="home_working">ApkeSU active</string>
     <string name="home_working_version">Installed version: %s</string>
+    <string name="home_lkm_update_available">A newer bundled LKM is available. Tap to update.</string>
+    <string name="home_lkm_custom">Custom</string>
     <string name="root_state_driver_disconnected">Driver disconnected</string>
     <string name="root_state_manager_unregistered">Manager not registered</string>
     <string name="root_state_daemon_error">Daemon error</string>
@@ -213,8 +215,11 @@
     <string name="uapi_mismatch">Manager uapi version (%1$d) and ApkeSU driver uapi version (%2$d) mismatch.</string>
     <string name="require_manager_version">The current ApkeSU manager version %1$d is too low for ApkeSU to work properly. Please upgrade manager to version %2$d or higher!</string>
     <string name="require_kernel_version">The current ApkeSU version %1$d is too low for the manager to work properly. Please upgrade to version %2$d or higher!</string>
+    <string name="require_kernel_version_gki">Kernel update required</string>
     <string name="settings_umount_modules_default">Umount modules by default</string>
     <string name="settings_umount_modules_default_summary">The global default value for \"Umount modules\" in App Profile. If enabled, it will remove all module modifications to the system for apps that don\'t have a profile set.</string>
+    <string name="settings_check_update">Check for updates</string>
+    <string name="settings_check_update_summary">Automatically check for updates when opening the app.</string>
     <string name="settings_builtin_mount">Enable built-in mount</string>
     <string name="settings_builtin_mount_summary">Install and enable the built-in Hybrid Mount metamodule.</string>
     <string name="settings_builtin_mount_conflict_summary">Another metamodule is active: %s</string>
