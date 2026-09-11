@@ -13,4 +13,9 @@ class BootPatchModeTest {
     fun hiddenPathPatchAddsOnlyPathmaskArgument() {
         assertEquals(" --pathmask-lkm", BootPatchMode.HiddenPath.cliArguments())
     }
+
+    @Test(expected = IllegalStateException::class)
+    fun nativeKpmCannotUseTheLkmCommand() {
+        BootPatchMode.NativeKpm.cliArguments()
+    }
 }

@@ -258,7 +258,8 @@ import me.weishu.kernelsu.ui.util.ManagerUpdateInfo
 import me.weishu.kernelsu.ui.util.ensureManagerRegistered
 import me.weishu.kernelsu.ui.util.getFileName
 import me.weishu.kernelsu.ui.util.getSuperuserCount
-import me.weishu.kernelsu.ui.util.getKPatchNextStatus
+import me.weishu.kernelsu.ui.util.KpmCaps
+import me.weishu.kernelsu.ui.util.getKpmCaps
 import me.weishu.kernelsu.ui.util.KPatchNextStatus
 import me.weishu.kernelsu.ui.util.install
 import me.weishu.kernelsu.ui.util.ksuRootAvailable
@@ -290,6 +291,12 @@ class MainActivity : ComponentActivity() {
     @SuppressLint("UnusedMaterial3ScaffoldPaddingParameter")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        // The splash post-theme is NoActionBar, but some OEM/theme combinations
+        // can restore a platform action bar when the activity is recreated. The
+        // Compose home screens already own their title bar, so keep the platform
+        // bar hidden to avoid rendering a duplicate app title.
+        actionBar?.hide()
 
         // Keep immersive pages, including transparent Material settings, drawn behind side cutouts.
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
@@ -866,15 +873,22 @@ private fun MainActivityUiState.effectiveCustomBackground(
     mainDestination: MainDestination,
     currentRoute: Route?,
 ): CustomBackgroundState {
-    val routeBackground = when (currentRoute) {
-        Route.Install -> customPageBackgrounds[CustomPageBackgroundTarget.Install]
-        else -> null
-    }?.takeIf { it.hasMedia }
+    val routeBackground = customPageBackgroundTarget(currentRoute)
+        ?.let(customPageBackgrounds::get)
+        ?.takeIf { it.hasMedia }
     if (routeBackground != null) {
         return routeBackground
     }
 
     return customBackgroundForMainDestination(mainDestination)
+}
+
+internal fun customPageBackgroundTarget(route: Route?): CustomPageBackgroundTarget? {
+    return when (route) {
+        Route.Install -> CustomPageBackgroundTarget.Install
+        Route.Kpm -> CustomPageBackgroundTarget.Kpm
+        else -> null
+    }
 }
 
 private fun MainActivityUiState.mainPagerBackgrounds(kpmActive: Boolean): List<CustomBackgroundState> {
@@ -1173,12 +1187,12 @@ fun MainScreen(
         value = when (fullFeaturedResult) {
             // A full-feature probe can briefly fail while manager registration or
             // the root shell is being refreshed. Keep the committed pager topology
-            // until KPatch-Next itself reports a confirmed inactive state.
+            // until the backend capability probe reports a confirmed inactive state.
             false -> KpmPageAvailability.Unknown
             true -> kotlinx.coroutines.withContext(Dispatchers.IO) {
-                runCatching { getKPatchNextStatus() }
+                runCatching { getKpmCaps() }
                     .fold(
-                        onSuccess = KpmPageAvailability::fromStatus,
+                        onSuccess = KpmPageAvailability::fromCaps,
                         onFailure = { KpmPageAvailability.Unknown },
                     )
             }
@@ -1434,6 +1448,16 @@ internal enum class KpmPageAvailability {
     }
 
     companion object {
+        fun fromCaps(caps: KpmCaps): KpmPageAvailability {
+            if (caps.error.isNotBlank()) return Unknown
+            if (caps.lateLoad || caps.backend == "none") return Inactive
+            return when (caps.backend) {
+                "native-gki" -> if (caps.managementAvailable) Active else Inactive
+                "kpatch-next" -> if (caps.managementAvailable) Active else Inactive
+                else -> Unknown
+            }
+        }
+
         fun fromStatus(status: KPatchNextStatus): KpmPageAvailability {
             if (status.error.isNotBlank()) return Unknown
             return if (shouldShowKpmPage(status)) Active else Inactive

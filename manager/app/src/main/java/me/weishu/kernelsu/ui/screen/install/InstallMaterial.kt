@@ -88,7 +88,7 @@ internal fun InstallScreenMaterial(
                 onSelectAnyKernel = actions.onSelectAnyKernel,
             )
 
-            if (uiState.installMethod != null && uiState.installMethod !is InstallMethod.AnyKernel && uiState.installMethod !is InstallMethod.DownloadFile) {
+            if (uiState.installMethod != null && uiState.installMethod !is InstallMethod.AnyKernel) {
                 PatchModeSelector(uiState, actions)
             }
 
@@ -106,7 +106,7 @@ internal fun InstallScreenMaterial(
                     } else {
                         uiState.partitionSelectionIndex
                     }
-                    if (partitionItems.isNotEmpty()) add {
+                    if (partitionItems.isNotEmpty() && uiState.patchMode != BootPatchMode.NativeKpm) add {
                         SegmentedDropdownItem(
                             enabled = uiState.canSelectPartition,
                             items = partitionItems,
@@ -120,7 +120,7 @@ internal fun InstallScreenMaterial(
                             icon = Icons.Filled.Edit
                         )
                     }
-                    val usesBuiltInLkm = !isDownload &&
+                    val usesBuiltInLkm = uiState.patchMode != BootPatchMode.NativeKpm && !isDownload &&
                             (uiState.patchMode != BootPatchMode.Normal ||
                             uiState.lkmSelection !is LkmSelection.LkmUri
                             )
@@ -167,7 +167,7 @@ internal fun InstallScreenMaterial(
                 }
             )
 
-            SegmentedColumn(
+            if (uiState.patchMode != BootPatchMode.NativeKpm) SegmentedColumn(
                 modifier = Modifier.padding(horizontal = 16.dp),
             ) {
                     item {

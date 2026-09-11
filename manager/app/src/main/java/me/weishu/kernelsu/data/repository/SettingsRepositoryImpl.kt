@@ -107,6 +107,7 @@ import me.weishu.kernelsu.ui.util.getBuiltinMountStatus as readBuiltinMountStatu
 import me.weishu.kernelsu.ui.util.getFeaturePersistValue
 import me.weishu.kernelsu.ui.util.getFeatureStatus
 import me.weishu.kernelsu.ui.util.getKPatchNextStatus as readKPatchNextStatus
+import me.weishu.kernelsu.ui.util.getKpmCaps as readKpmCaps
 import me.weishu.kernelsu.ui.util.releaseCustomImageReference
 import me.weishu.kernelsu.ui.util.releasePersistableVideoBackgroundReadPermission
 import me.weishu.kernelsu.ui.util.clearCustomPageBackground as clearPageBackground
@@ -992,6 +993,8 @@ class SettingsRepositoryImpl : SettingsRepository {
     override suspend fun getKPatchNextStatus() = readKPatchNextStatus()
 
     override fun setKPatchNextEnabled(enabled: Boolean): Boolean = writeKPatchNextEnabled(enabled)
+
+    override suspend fun getKpmCaps() = readKpmCaps()
 
     override suspend fun getEpkesuHideStatus(): Boolean = readEpkesuHideStatus().configured
 

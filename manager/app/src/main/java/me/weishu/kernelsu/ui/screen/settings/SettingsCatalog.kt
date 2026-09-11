@@ -123,7 +123,15 @@ internal object SettingsCatalog {
 }
 
 internal val SettingsUiState.isKpmSettingsEntryVisible: Boolean
-    get() = isKPatchNextEnabled && !isKPatchNextPendingRemove && !isLateLoadMode
+    get() = runtimeModeResolved &&
+        isKpmCapabilityResolved &&
+        isKpmManagementAvailable &&
+        !isLateLoadMode &&
+        when (kpmBackend) {
+            "native-gki" -> !isLkmMode
+            "kpatch-next" -> isLkmMode && isKPatchNextEnabled && !isKPatchNextPendingRemove
+            else -> false
+        }
 
 internal fun readLastSettingsCategory(context: Context): SettingsCategory? {
     val route = context.applicationContext

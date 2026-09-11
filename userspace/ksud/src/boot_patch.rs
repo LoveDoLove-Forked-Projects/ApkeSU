@@ -1059,12 +1059,12 @@ pub fn patch(args: BootPatchArgs) -> Result<()> {
 
         #[cfg(target_os = "android")]
         if flash {
+            // Direct install must not be blocked by rescue backup state. The
+            // explicit rescue restore path keeps its verification gate.
+            println!("- Rescue verification skipped for direct install");
             println!("- Flashing new boot image");
             let bootdevice = boot_image_file.display().to_string();
             flash_partition(&bootdevice, &new_boot_bytes)?;
-            if let Err(err) = crate::rescue::mark_next_boot_pending("boot image flashed") {
-                log::warn!("failed to mark flashed boot image for rescue verification: {err:#}");
-            }
             if ota {
                 post_ota()?;
             }
@@ -1230,6 +1230,8 @@ pub fn restore(args: BootRestoreArgs) -> Result<()> {
 
     #[cfg(target_os = "android")]
     if flash {
+        crate::rescue::mark_next_boot_pending("boot image restore")
+            .context("failed to arm rescue verification before restoring boot image")?;
         if let Some(ref source) = stock_source {
             println!("- Flashing new boot image from {}", source.display());
         } else {
@@ -1237,9 +1239,6 @@ pub fn restore(args: BootRestoreArgs) -> Result<()> {
         }
         let bootdevice = boot_image_file.display().to_string();
         flash_partition(&bootdevice, &new_boot_bytes)?;
-        if let Err(err) = crate::rescue::mark_next_boot_pending("boot image restored") {
-            log::warn!("failed to mark restored boot image for rescue verification: {err:#}");
-        }
     }
 
     #[cfg(target_os = "android")]

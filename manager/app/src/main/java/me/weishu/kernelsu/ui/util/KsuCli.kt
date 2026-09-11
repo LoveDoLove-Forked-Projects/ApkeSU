@@ -14,6 +14,7 @@ import com.topjohnwu.superuser.CallbackList
 import com.topjohnwu.superuser.Shell
 import com.topjohnwu.superuser.ShellUtils
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
@@ -73,6 +74,14 @@ const val HIDDEN_PATH_MAX_AUTO_LOAD_DELAY_SECONDS = 300
 private const val SUSFS_PATH_CONFIG_DIR = "/data/adb/ksu/susfs"
 private const val SUSFS_PATH_CONFIG_FILE = "$SUSFS_PATH_CONFIG_DIR/paths.txt"
 private const val SUSFS_PATH_SERVICE_FILE = "/data/adb/service.d/98-apkesu-susfs-paths.sh"
+private const val SUSFS_PATH_FEATURE = "CONFIG_KSU_SUSFS_SUS_PATH"
+private const val SUSFS_PATH_LOOP_FEATURE = "CONFIG_KSU_SUSFS_SUS_PATH_LOOP"
+private const val SUSFS_TRY_UMOUNT_FEATURE = "CONFIG_KSU_SUSFS_TRY_UMOUNT"
+private const val SUSFS_KSTAT_FEATURE = "CONFIG_KSU_SUSFS_SUS_KSTAT"
+private const val SUSFS_OPEN_REDIRECT_FEATURE = "CONFIG_KSU_SUSFS_OPEN_REDIRECT"
+private const val SUSFS_PATH_CONFIG_MAX_BYTES = 64 * 1024
+private const val SUSFS_EXTERNAL_STORAGE_WAIT_ATTEMPTS = 100
+private const val SUSFS_PATH_APPLY_TIMEOUT_MILLIS = 130_000L
 private const val GRAPHICS_RENDERER_DIR = "/data/adb/apkesu/graphics_renderer"
 private const val GRAPHICS_RENDERER_MODE_FILE = "$GRAPHICS_RENDERER_DIR/mode"
 private const val GRAPHICS_RENDERER_BACKUP_MARKER = "$GRAPHICS_RENDERER_DIR/backup_complete"
@@ -152,10 +161,12 @@ data class KPatchNextStatus(
 )
 
 data class KpmCaps(
-    val backend: String = "kpatch-next",
+    val backend: String = "none",
     val managementAvailable: Boolean = false,
     val supported: Boolean = false,
     val kernelSupported: Boolean = false,
+    val loaderReady: Boolean = false,
+    val probeError: Int = 0,
     val policyEnabled: Boolean = true,
     val lateLoad: Boolean = false,
     val abiVersion: Int = 0,
@@ -176,6 +187,7 @@ data class KpmEntry(
     val args: String = "",
     val enabled: Boolean = false,
     val loaded: Boolean = false,
+    val runtimeKnown: Boolean = true,
     val quarantined: Boolean = false,
     val quarantineReason: String = "",
     val sourceName: String = "",
@@ -313,10 +325,22 @@ data class HiddenPathVisibilityResult(
     val error: String = "",
 )
 
+data class SusfsCapabilities(
+    val version: String = "",
+    val features: Set<String> = emptySet(),
+    val featureProbeAvailable: Boolean = false,
+    val supportsAddSusPath: Boolean = false,
+    val supportsPathLoop: Boolean = false,
+    val supportsTryUmount: Boolean = false,
+    val supportsKstat: Boolean = false,
+    val supportsOpenRedirect: Boolean = false,
+)
+
 data class SusfsPathConfigState(
     val available: Boolean = false,
     val toolPath: String = "",
     val paths: List<String> = emptyList(),
+    val capabilities: SusfsCapabilities = SusfsCapabilities(),
     val error: String = "",
 )
 
@@ -420,6 +444,9 @@ data class RescueStatus(
     val bootCount: Int = 0,
     val autoRestoreAttempts: Int = 0,
     val pendingBoot: Boolean = false,
+    val pendingImageBoot: Boolean = false,
+    val restorePendingBoot: Boolean = false,
+    val restoreBootState: String = "none",
     val currentSlot: String = "",
     val bootMode: String = "",
     val device: String = "",
@@ -976,13 +1003,18 @@ suspend fun getKpmCaps(): KpmCaps {
         val obj = JSONObject(result.output)
         val capabilities = obj.optInt("capabilities", 0)
         KpmCaps(
-            backend = obj.optString("backend", "kpatch-next"),
+            backend = obj.optString("backend", "none").lowercase(),
             managementAvailable = obj.optBoolean(
                 "managementAvailable",
                 obj.optBoolean("kernelSupported", capabilities != 0),
             ),
             supported = obj.optBoolean("supported", capabilities != 0) && capabilities != 0,
             kernelSupported = obj.optBoolean("kernelSupported", capabilities != 0),
+            loaderReady = obj.optBoolean(
+                "loaderReady",
+                obj.optBoolean("kernelSupported", capabilities != 0),
+            ),
+            probeError = obj.optInt("probeError", 0),
             policyEnabled = obj.optBoolean("policyEnabled", true),
             lateLoad = obj.optBoolean("lateLoad", false),
             abiVersion = obj.optInt("abiVersion", 0),
@@ -1097,6 +1129,10 @@ fun parseKpmEntries(content: String): List<KpmEntry> {
                     args = obj.optString("args", ""),
                     enabled = obj.optBoolean("enabled", false),
                     loaded = obj.optBoolean("loaded", false),
+                    runtimeKnown = obj.optBoolean(
+                        "runtimeKnown",
+                        obj.has("loaded") && !obj.isNull("loaded"),
+                    ),
                     quarantined = obj.optBoolean("quarantined", false),
                     quarantineReason = obj.optString("quarantineReason", ""),
                     sourceName = obj.optString("sourceName", ""),
@@ -1899,6 +1935,77 @@ fun normalizeSusfsPath(raw: String): String? {
     return normalized
 }
 
+internal data class SusfsVersion(
+    val major: Int,
+    val minor: Int,
+    val patch: Int,
+)
+
+private val susfsVersionPattern = Regex("(?:^|[^0-9])v?(\\d+)\\.(\\d+)\\.(\\d+)")
+
+internal fun parseSusfsVersion(raw: String): SusfsVersion? {
+    val match = susfsVersionPattern.find(raw.trim()) ?: return null
+    return SusfsVersion(
+        major = match.groupValues[1].toIntOrNull() ?: return null,
+        minor = match.groupValues[2].toIntOrNull() ?: return null,
+        patch = match.groupValues[3].toIntOrNull() ?: return null,
+    )
+}
+
+internal fun parseSusfsFeatureNames(raw: String): Set<String> = raw
+    .split(Regex("[\\s,]+"))
+    .asSequence()
+    .map(String::trim)
+    .filter { it.startsWith("CONFIG_KSU_SUSFS_") }
+    .toSet()
+
+private fun SusfsVersion.atLeast(major: Int, minor: Int, patch: Int): Boolean =
+    compareValuesBy(this, SusfsVersion(major, minor, patch), SusfsVersion::major, SusfsVersion::minor, SusfsVersion::patch) >= 0
+
+private fun SusfsVersion.before(major: Int, minor: Int, patch: Int): Boolean =
+    !atLeast(major, minor, patch)
+
+internal fun shouldPrepareSusfsExternalStorageRoots(
+    versionText: String,
+    paths: Collection<String>,
+): Boolean {
+    val version = parseSusfsVersion(versionText) ?: return false
+    val needsLegacyRoots = version.atLeast(1, 5, 8) && version.before(2, 1, 0)
+    if (!needsLegacyRoots) return false
+    return paths.any { path ->
+        path == "/sdcard" ||
+            path.startsWith("/sdcard/") ||
+            path == "/storage/emulated" ||
+            path.startsWith("/storage/emulated/") ||
+            path == "/storage/self/primary" ||
+            path.startsWith("/storage/self/primary/")
+    }
+}
+
+internal fun buildSusfsCapabilities(
+    toolAvailable: Boolean,
+    versionText: String,
+    featureText: String,
+    featureProbeSucceeded: Boolean,
+): SusfsCapabilities {
+    val version = parseSusfsVersion(versionText)
+    val features = parseSusfsFeatureNames(featureText)
+    fun has(feature: String): Boolean = feature in features
+    return SusfsCapabilities(
+        version = versionText.trim(),
+        features = features,
+        featureProbeAvailable = featureProbeSucceeded,
+        supportsAddSusPath = toolAvailable && (!featureProbeSucceeded || has(SUSFS_PATH_FEATURE)),
+        supportsPathLoop = has(SUSFS_PATH_LOOP_FEATURE) ||
+            (!featureProbeSucceeded && version?.atLeast(1, 5, 9) == true),
+        supportsTryUmount = has(SUSFS_TRY_UMOUNT_FEATURE) ||
+            (!featureProbeSucceeded && version?.atLeast(1, 5, 3) == true),
+        supportsKstat = has(SUSFS_KSTAT_FEATURE) ||
+            (!featureProbeSucceeded && version?.atLeast(2, 0, 0) == true),
+        supportsOpenRedirect = has(SUSFS_OPEN_REDIRECT_FEATURE),
+    )
+}
+
 suspend fun getSusfsPathConfig(): SusfsPathConfigState = withContext(Dispatchers.IO) {
     if (shouldSkipUnsafeKsudCommand()) {
         return@withContext SusfsPathConfigState(error = "root_unavailable")
@@ -1912,10 +2019,26 @@ suspend fun getSusfsPathConfig(): SusfsPathConfigState = withContext(Dispatchers
     val command = buildString {
         appendLine("tool=''")
         appendLine("for candidate in /data/adb/ksu/bin/ksu_susfs /data/adb/ap/bin/ksu_susfs /system/bin/ksu_susfs; do")
-        appendLine("  if [ -x \"${'$'}candidate\" ]; then tool=\"${'$'}candidate\"; break; fi")
+        appendLine("  if [ -f \"${'$'}candidate\" ] && [ -x \"${'$'}candidate\" ]; then tool=\"${'$'}candidate\"; break; fi")
         appendLine("done")
         appendLine("if [ -z \"${'$'}tool\" ]; then tool=\$(command -v ksu_susfs 2>/dev/null); fi")
         appendLine("printf '__TOOL__=%s\\n' \"${'$'}tool\"")
+        appendLine("version=''")
+        appendLine("features=''")
+        appendLine("feature_output=''")
+        appendLine("feature_probe=0")
+        appendLine("if [ -n \"${'$'}tool\" ]; then")
+        appendLine("  version=\"${'$'}(\"${'$'}tool\" show version 2>/dev/null | sed -n '1p')\"")
+        appendLine("  if feature_output=\"${'$'}(\"${'$'}tool\" show enabled_features 2>/dev/null)\"; then")
+        appendLine("    feature_probe=1")
+        appendLine("    features=\"${'$'}(printf '%s' \"${'$'}feature_output\" | tr '\\n' ' ')\"")
+        appendLine("  else")
+        appendLine("    features=''")
+        appendLine("  fi")
+        appendLine("fi")
+        appendLine("printf '__VERSION__=%s\\n' \"${'$'}version\"")
+        appendLine("printf '__FEATURE_PROBE__=%s\\n' \"${'$'}feature_probe\"")
+        appendLine("printf '__FEATURES__=%s\\n' \"${'$'}features\"")
         appendLine("if [ -f ${shellQuote(SUSFS_PATH_CONFIG_FILE)} ]; then")
         appendLine("  while IFS= read -r target_path; do")
         appendLine("    [ -n \"${'$'}target_path\" ] && printf '__PATH__=%s\\n' \"${'$'}target_path\"")
@@ -1950,11 +2073,33 @@ suspend fun getSusfsPathConfig(): SusfsPathConfigState = withContext(Dispatchers
         .mapNotNull(::normalizeSusfsPath)
         .distinct()
         .toList()
+    val toolVersion = stdout.firstOrNull { it.startsWith("__VERSION__=") }
+        ?.substringAfter('=')
+        ?.trim()
+        .orEmpty()
+    val featureText = stdout.firstOrNull { it.startsWith("__FEATURES__=") }
+        ?.substringAfter('=')
+        ?.trim()
+        .orEmpty()
+    val featureProbeSucceeded = stdout.firstOrNull { it.startsWith("__FEATURE_PROBE__=") }
+        ?.substringAfter('=')
+        ?.trim() == "1"
+    val capabilities = buildSusfsCapabilities(
+        toolAvailable = toolPath.isNotBlank(),
+        versionText = toolVersion,
+        featureText = featureText,
+        featureProbeSucceeded = featureProbeSucceeded,
+    )
     SusfsPathConfigState(
-        available = toolPath.isNotBlank(),
+        available = capabilities.supportsAddSusPath,
         toolPath = toolPath,
         paths = paths,
-        error = if (toolPath.isBlank()) "tool_unavailable" else "",
+        capabilities = capabilities,
+        error = when {
+            toolPath.isBlank() -> "tool_unavailable"
+            !capabilities.supportsAddSusPath -> "path_feature_unavailable"
+            else -> ""
+        },
     )
 }
 
@@ -1972,13 +2117,21 @@ suspend fun saveAndApplySusfsPathConfig(paths: List<String>): SusfsPathApplyResu
     if (normalized.size != paths.size) {
         return@withContext SusfsPathApplyResult(error = "invalid_path")
     }
+    val configText = normalized.joinToString(separator = "\n", postfix = if (normalized.isEmpty()) "" else "\n")
+    if (configText.toByteArray(Charsets.UTF_8).size > SUSFS_PATH_CONFIG_MAX_BYTES) {
+        return@withContext SusfsPathApplyResult(error = "config_too_large")
+    }
 
     val previous = getSusfsPathConfig()
-    if (!previous.available) {
+    if (!previous.available || !previous.capabilities.supportsAddSusPath) {
         return@withContext SusfsPathApplyResult(error = previous.error.ifBlank { "tool_unavailable" })
     }
     val requiresReboot = previous.paths.any { it !in normalized }
-    val configText = normalized.joinToString(separator = "\n", postfix = if (normalized.isEmpty()) "" else "\n")
+    val additions = normalized.filterNot(previous.paths::contains)
+    val prepareExternalStorageRoots = shouldPrepareSusfsExternalStorageRoots(
+        versionText = previous.capabilities.version,
+        paths = additions,
+    )
     val serviceScript = susfsPathServiceScript()
     val serviceBase64 = Base64.encodeToString(serviceScript.toByteArray(Charsets.UTF_8), Base64.NO_WRAP)
     val stdout = ArrayList<String>()
@@ -1988,7 +2141,7 @@ suspend fun saveAndApplySusfsPathConfig(paths: List<String>): SusfsPathApplyResu
     val command = buildString {
         appendLine("set -e")
         appendLine("mkdir -p ${shellQuote(SUSFS_PATH_CONFIG_DIR)} /data/adb/service.d")
-        appendLine("trap 'rm -f $pendingConfig $pendingConfig.tmp $pendingService' EXIT")
+        appendLine("trap 'rm -f $pendingConfig $pendingConfig.tmp $pendingService $pendingService.tmp' EXIT")
         appendLine(atomicWriteCommand(pendingConfig, configText))
         appendLine(
             "printf '%s' ${shellQuote(serviceBase64)} | $BUSYBOX base64 -d > " +
@@ -1996,14 +2149,27 @@ suspend fun saveAndApplySusfsPathConfig(paths: List<String>): SusfsPathApplyResu
         )
         appendLine("chmod 0700 ${shellQuote(pendingService)}")
         appendLine("chown 0:0 ${shellQuote(pendingService)}")
-        normalized.forEach { path ->
+        if (prepareExternalStorageRoots) {
+            appendLine("storage_attempt=0")
+            appendLine(
+                "while [ \"${'$'}storage_attempt\" -lt $SUSFS_EXTERNAL_STORAGE_WAIT_ATTEMPTS ] && " +
+                    "[ ! -d /sdcard/Android/data ]; do",
+            )
+            appendLine("  storage_attempt=${'$'}((storage_attempt + 1))")
+            appendLine("  sleep 1")
+            appendLine("done")
+            appendLine("[ -d /sdcard/Android/data ] || { printf '%s\\n' external_storage_unavailable >&2; exit 1; }")
+            appendLine("${shellQuote(previous.toolPath)} set_sdcard_root_path /sdcard")
+            appendLine("${shellQuote(previous.toolPath)} set_android_data_root_path /sdcard/Android/data")
+        }
+        additions.forEach { path ->
             appendLine("${shellQuote(previous.toolPath)} add_sus_path ${shellQuote(path)}")
         }
         appendLine("mv -f ${shellQuote(pendingConfig)} ${shellQuote(SUSFS_PATH_CONFIG_FILE)}")
         appendLine("mv -f ${shellQuote(pendingService)} ${shellQuote(SUSFS_PATH_SERVICE_FILE)}")
     }
     val result = runCatching {
-        withTimeoutOrNull(SHELL_JOB_TIMEOUT_MILLIS * 3) {
+        withTimeoutOrNull(SUSFS_PATH_APPLY_TIMEOUT_MILLIS) {
             getRootShell().newJob().add(command).to(stdout, stderr).exec()
         }
     }.getOrElse { error ->
@@ -2034,18 +2200,78 @@ suspend fun saveAndApplySusfsPathConfig(paths: List<String>): SusfsPathApplyResu
 
 internal fun susfsPathServiceScript(): String = """#!/system/bin/sh
 CONFIG=$SUSFS_PATH_CONFIG_FILE
+SUSFS_PATH_FEATURE=$SUSFS_PATH_FEATURE
+TOOL=
+TOOL_VERSION=
+SUSFS_FEATURES=
+FEATURE_PROBE_OK=0
+PROBED=0
+PROBE_SUPPORTED=0
+EXTERNAL_ROOTS_PREPARED=0
 find_tool() {
-    TOOL=
     for candidate in /data/adb/ksu/bin/ksu_susfs /data/adb/ap/bin/ksu_susfs /system/bin/ksu_susfs; do
-        if [ -x "${'$'}candidate" ]; then
+        if [ -f "${'$'}candidate" ] && [ -x "${'$'}candidate" ]; then
             TOOL="${'$'}candidate"
             break
         fi
     done
     if [ -z "${'$'}TOOL" ]; then
-        TOOL=\$(command -v ksu_susfs 2>/dev/null)
+        TOOL=${'$'}(command -v ksu_susfs 2>/dev/null)
     fi
     [ -x "${'$'}TOOL" ]
+}
+
+probe_tool() {
+    if [ "${'$'}PROBED" -eq 1 ]; then
+        [ "${'$'}PROBE_SUPPORTED" -eq 1 ]
+        return
+    fi
+    TOOL_VERSION=${'$'}("${'$'}TOOL" show version 2>/dev/null | sed -n '1p')
+    if SUSFS_FEATURES=${'$'}("${'$'}TOOL" show enabled_features 2>/dev/null); then
+        FEATURE_PROBE_OK=1
+    else
+        FEATURE_PROBE_OK=0
+        SUSFS_FEATURES=
+    fi
+    PROBED=1
+    if [ "${'$'}FEATURE_PROBE_OK" -eq 1 ] && ! printf '%s\n' "${'$'}SUSFS_FEATURES" | grep -q "${'$'}SUSFS_PATH_FEATURE"; then
+        PROBE_SUPPORTED=0
+        return 1
+    fi
+    PROBE_SUPPORTED=1
+    return 0
+}
+
+needs_external_storage_roots() {
+    while IFS= read -r target_path; do
+        case "${'$'}target_path" in
+            /sdcard|/sdcard/*|/storage/emulated|/storage/emulated/*|/storage/self/primary|/storage/self/primary/*) return 0 ;;
+        esac
+    done < "${'$'}CONFIG"
+    return 1
+}
+
+supports_external_storage_roots() {
+    version_triplet=${'$'}(printf '%s\n' "${'$'}TOOL_VERSION" | sed -n 's/^[^0-9]*\([0-9][0-9]*\)\.\([0-9][0-9]*\)\.\([0-9][0-9]*\).*/\1 \2 \3/p')
+    [ -n "${'$'}version_triplet" ] || return 1
+    set -- ${'$'}version_triplet
+    version_code=${'$'}(( ${'$'}1 * 10000 + ${'$'}2 * 100 + ${'$'}3 ))
+    [ "${'$'}version_code" -ge 10508 ] && [ "${'$'}version_code" -lt 20100 ]
+}
+
+prepare_external_storage_roots() {
+    [ "${'$'}EXTERNAL_ROOTS_PREPARED" -eq 1 ] && return 0
+    EXTERNAL_ROOTS_PREPARED=1
+    needs_external_storage_roots || return 0
+    supports_external_storage_roots || return 0
+
+    storage_attempt=0
+    while [ "${'$'}storage_attempt" -lt 100 ] && [ ! -d /sdcard/Android/data ]; do
+        storage_attempt=${'$'}((storage_attempt + 1))
+        sleep 1
+    done
+    "${'$'}TOOL" set_sdcard_root_path /sdcard >/dev/null 2>&1 || true
+    "${'$'}TOOL" set_android_data_root_path /sdcard/Android/data >/dev/null 2>&1 || true
 }
 
 apply_paths() {
@@ -2061,8 +2287,14 @@ apply_paths() {
 attempt=0
 while [ "${'$'}attempt" -lt 30 ]; do
     [ -f "${'$'}CONFIG" ] || exit 0
-    if find_tool && apply_paths; then
-        exit 0
+    if [ -z "${'$'}TOOL" ]; then
+        find_tool || true
+    fi
+    if [ -n "${'$'}TOOL" ] && probe_tool; then
+        prepare_external_storage_roots
+        if apply_paths; then
+            exit 0
+        fi
     fi
     attempt=${'$'}((attempt + 1))
     sleep 1
@@ -2209,6 +2441,9 @@ suspend fun getRescueStatus(): RescueStatus = withContext(Dispatchers.IO) {
             bootCount = obj.optInt("bootCount", 0),
             autoRestoreAttempts = obj.optInt("autoRestoreAttempts", 0),
             pendingBoot = obj.optBoolean("pendingBoot", false),
+            pendingImageBoot = obj.optBoolean("pendingImageBoot", false),
+            restorePendingBoot = obj.optBoolean("restorePendingBoot", false),
+            restoreBootState = obj.optString("restoreBootState", "none"),
             currentSlot = obj.optString("currentSlot", ""),
             bootMode = obj.optString("bootMode", ""),
             device = listOf(
@@ -2722,11 +2957,46 @@ private fun bootPatchFlags(
 enum class BootPatchMode {
     Normal,
     HiddenPath,
+    NativeKpm,
 }
 
 internal fun BootPatchMode.cliArguments(): String = when (this) {
     BootPatchMode.Normal -> ""
     BootPatchMode.HiddenPath -> " --pathmask-lkm"
+    BootPatchMode.NativeKpm -> error("Native GKI KPM requires boot-patch-kpimg")
+}
+
+internal fun nativeKpmPatchCommand(bootPath: String, outputPath: String): String =
+    "boot-patch-kpimg --boot ${shellQuote(bootPath)} --output ${shellQuote(outputPath)} --force"
+
+private suspend fun patchNativeKpmFile(
+    input: File,
+    onStdout: (String) -> Unit,
+    onStderr: (String) -> Unit,
+): FlashResult = withContext(Dispatchers.IO) {
+    val output = preparePatchedImageOutput(
+        ksuApp.cacheDir,
+        "apkesu_gki_kpm_${System.currentTimeMillis()}.img",
+    )
+    try {
+        val command = nativeKpmPatchCommand(input.absolutePath, output.absolutePath)
+        val result = flashWithIO("${shellQuote(getKsuDaemonPath())} $command", onStdout, onStderr)
+        if (!result.isSuccess) return@withContext FlashResult(result, false)
+        if (validatePatchedImageOutput(output) != null) restorePatchedImageAccess(output)
+        val error = validatePatchedImageOutput(output)
+        if (error != null) return@withContext FlashResult(1, error, false)
+        val destination = saveFileToDownloads(ksuApp, output.name, output)
+        onStdout("- Native GKI KPM image saved to $destination")
+        FlashResult(result, false)
+    } catch (error: CancellationException) {
+        throw error
+    } catch (error: Exception) {
+        val message = error.localizedMessage ?: "Native GKI KPM patch failed"
+        onStderr(message)
+        FlashResult(1, message, false)
+    } finally {
+        output.delete()
+    }
 }
 
 suspend fun installBoot(
@@ -2747,6 +3017,14 @@ suspend fun installBoot(
 
     return try {
         bootFile = bootUri?.let { uri -> copyUriToCache(uri, "boot.img") }
+        if (patchMode == BootPatchMode.NativeKpm) {
+            val input = bootFile
+                ?: return FlashResult(1, "Native GKI KPM requires a selected boot.img", false)
+            if (ota || partition != null && partition != "boot") {
+                return FlashResult(1, "Native GKI KPM only supports boot.img output without flashing", false)
+            }
+            return patchNativeKpmFile(input, onStdout, onStderr)
+        }
         var cmd = "boot-patch"
 
         cmd += bootFile?.let { " -b ${shellQuote(it.absolutePath)}" } ?: " -f"
@@ -2874,6 +3152,9 @@ suspend fun downloadBoot(
     var lkmFile: File? = null
     var patchedOutput: File? = null
     try {
+        if (patchMode == BootPatchMode.NativeKpm && partition != "boot") {
+            return@withContext FlashResult(1, "Native GKI KPM requires the boot partition", false)
+        }
         onStdout("- Downloading and extracting $partition")
         val channel = DataSourceChannel(newDownloadClient(), url)
         val magic = try {
@@ -2887,13 +3168,13 @@ suspend fun downloadBoot(
             if (magic == "CrAU") {
                 ExtractImage.probePayload(
                     probeChannel,
-                    withKmi = lkm is LkmSelection.KmiNone,
+                    withKmi = patchMode != BootPatchMode.NativeKpm && lkm is LkmSelection.KmiNone,
                     onProgress = onStdout,
                 ).kmi
             } else {
                 ExtractImage.probe(
                     probeChannel,
-                    withKmi = lkm is LkmSelection.KmiNone,
+                    withKmi = patchMode != BootPatchMode.NativeKpm && lkm is LkmSelection.KmiNone,
                     onProgress = onStdout,
                 ).kmi
             }
@@ -2906,6 +3187,9 @@ suspend fun downloadBoot(
             channel.close()
         }
 
+        if (patchMode == BootPatchMode.NativeKpm) {
+            return@withContext patchNativeKpmFile(bootFile, onStdout, onStderr)
+        }
         val autoKmi = if (lkm is LkmSelection.KmiNone) {
             (probedKmi ?: BootKernelVersion.parseKmiFromBoot(bootFile))?.also {
                 onStdout("- Auto detected KMI: $it")
@@ -3072,6 +3356,28 @@ fun flashAnyKernelZip(
     val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss_SSS", Locale.US).format(Date())
     val tmpFile = copyUriToCache(uri, "anykernel_${timestamp}.zip")
 
+    // AnyKernel is an external writer and can reboot or fail halfway through
+    // its own script. Arm rescue verification before handing it the archive.
+    // The daemon returns success when protection is disabled, so this remains
+    // compatible with installations that do not use rescue protection.
+    val rescueArmed = runCatching {
+        execKsud(
+            args = "rescue mark-pending ${shellQuote("AnyKernel install")}",
+            newShell = true,
+            globalMnt = true,
+        )
+    }.getOrElse {
+        Log.w(TAG, "failed to arm rescue marker before AnyKernel flash", it)
+        false
+    }
+    if (!rescueArmed) {
+        tmpFile.delete()
+        val error = "Rescue verification marker could not be armed; AnyKernel flash aborted"
+        onStderr(error)
+        return FlashResult(1, error, false)
+    }
+    onStdout("Rescue protection: next boot was marked for verification before AnyKernel flash")
+
     val destZip = tmpFile.absolutePath
     val destZipName = tmpFile.name
     val destDirFile = File(ksuApp.cacheDir, "anykernel3_${timestamp}")
@@ -3094,15 +3400,6 @@ fun flashAnyKernelZip(
 
     return try {
         val result = flashWithIoAk3(cmd, onStdout, onStderr)
-        if (result.isSuccess) {
-            runCatching {
-                if (!execKsud("rescue mark-pending ${shellQuote("AnyKernel install")}", true)) {
-                    onStderr("Rescue protection: failed to mark next boot pending")
-                }
-            }.onFailure {
-                Log.w(TAG, "failed to mark rescue pending after AnyKernel install", it)
-            }
-        }
         FlashResult(result, result.isSuccess)
     } finally {
         runCatching {

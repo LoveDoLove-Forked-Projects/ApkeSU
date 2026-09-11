@@ -2,6 +2,7 @@ package me.weishu.kernelsu.ui.screen.settings
 
 import android.content.Context
 import android.net.Uri
+import android.util.Log
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Box
@@ -73,7 +74,6 @@ import me.weishu.kernelsu.ui.component.material.TonalCard
 import me.weishu.kernelsu.ui.navigation3.LocalNavigator
 import me.weishu.kernelsu.ui.util.createRootShell
 import me.weishu.kernelsu.ui.util.execKsud
-import me.weishu.kernelsu.ui.util.getRescueStatus
 import java.io.File
 import java.io.FileOutputStream
 import java.security.MessageDigest
@@ -85,6 +85,7 @@ import top.yukonga.miuix.kmp.theme.MiuixTheme
 
 private const val IMAGE_TOOL_OUTPUT_DIR = "/sdcard/Download/ApkeSU-images"
 private const val IMAGE_TOOL_GRID_COLUMNS = 3
+private const val TAG = "ImageToolScreen"
 
 @Composable
 fun ImageToolScreen() {
@@ -873,6 +874,7 @@ private suspend fun flashImage(
     }
     require(staged.length() > 0L) { "Selected image is empty" }
     val sha256 = sha256(staged)
+    val rescueTracked = isRescueTrackedPartition(partition)
     val command = """
         set -eu
         img=${shellQuote(staged.absolutePath)}
@@ -893,37 +895,40 @@ private suspend fun flashImage(
         echo "sha256=$sha256"
     """.trimIndent()
     val result = try {
-        runImageToolRootCommand(command, "flash")
-    } finally {
-        staged.delete()
-    }
-    if (!result.success || !isRescueTrackedPartition(partition)) {
-        return@withContext result
-    }
-    val rescueStatus = getRescueStatus()
-    val markerMessage = when {
-        !rescueStatus.enabled -> "Rescue protection: disabled, so no verification marker was written"
-        !rescueStatus.ready -> "Rescue protection: backup is not ready, so no verification marker was written"
-        else -> {
+        if (rescueTracked) {
             val partitionName = partition.substringAfterLast('/')
-            if (
+            val armed = runCatching {
                 execKsud(
-                    args = "rescue mark-pending image-tool-$partitionName",
+                    args = "rescue mark-pending ${shellQuote("image-tool-$partitionName")}",
                     newShell = true,
                     globalMnt = true,
                 )
-            ) {
-                "Rescue protection: next boot marked for verification"
-            } else {
-                "Rescue protection: pending marker was not written"
+            }.getOrElse {
+                Log.w(TAG, "failed to arm rescue marker before image flash", it)
+                false
             }
+            if (!armed) {
+                ImageToolResult(
+                    success = false,
+                    log = "[flash] rescue verification marker could not be armed; flash aborted",
+                )
+            } else {
+                runImageToolRootCommand(command, "flash")
+            }
+        } else {
+            runImageToolRootCommand(command, "flash")
         }
+    } finally {
+        staged.delete()
+    }
+    if (!result.success || !rescueTracked) {
+        return@withContext result
     }
     result.copy(
         log = buildString {
             append(result.log)
             if (!result.log.endsWith('\n')) appendLine()
-            appendLine(markerMessage)
+            appendLine("Rescue protection: next boot was marked for verification before flash")
         }
     )
 }

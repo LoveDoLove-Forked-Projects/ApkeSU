@@ -181,3 +181,30 @@ previous ApkeSU schema-v1 certificate, and hardens incomplete scans and APK ZIP
 validation. No ReSukiSU fixed-manager certificates or Vivo package variant are
 included. See `docs/DYNAMIC_MANAGER.md` for the security contract and
 limitations.
+
+6. SukiSU-compatible GKI KPM interface
+---------------------------------------
+
+ApkeSU's Native GKI KPM interface is an explicitly declared compatibility
+implementation. Its ABI and GKI integration were designed with reference to
+[SukiSU-Ultra](https://github.com/SukiSU-Ultra/SukiSU-Ultra), audited at
+commit
+[`9fbe8fe8ca90c62c259c5894bf96d02ac31209b9`](https://github.com/SukiSU-Ultra/SukiSU-Ultra/commit/9fbe8fe8ca90c62c259c5894bf96d02ac31209b9).
+It is not an official SukiSU-Ultra distribution and does not imply endorsement
+by that project.
+
+The related early-boot runtime and image patcher are pinned from
+[SukiSU_KernelPatch_patch](https://github.com/ShirkNeko/SukiSU_KernelPatch_patch)
+at commit
+[`c5f0785dc7fac22a846eecc6392f34198d8e18b5`](https://github.com/ShirkNeko/SukiSU_KernelPatch_patch/commit/c5f0785dc7fac22a846eecc6392f34198d8e18b5).
+The vendored source, declared license, source-date metadata, excluded build
+artifacts, and local hardening are recorded in
+`third_party/kernelpatch/SOURCE.json` and `docs/SUKISU_KPM_NOTICE.md`.
+
+The ApkeSU implementation is limited to an AArch64 built-in GKI bridge
+(`CONFIG_KSU=y`, `CONFIG_KPM=y`) and the declared KPM UAPI. Its supercall
+authorization, ksud state machine, import validation, rescue recovery,
+logging, and Manager integration are ApkeSU-specific. LKM and late-load builds
+do not use this backend; they use the separate KPatch-Next path. This notice
+does not relicense any upstream source: SPDX headers, upstream license texts,
+and the source-availability requirements remain binding.

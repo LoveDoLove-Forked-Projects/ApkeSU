@@ -197,7 +197,7 @@ fun SettingPager(
         onSetDefaultUmountModules = viewModel::setDefaultUmountModules,
         onOpenBuiltinMount = { navigator.push(Route.BuiltinMount) },
         onSetKPatchNextEnabled = { enabled ->
-            if (!uiState.isLateLoadMode) {
+            if (uiState.canToggleKPatchNext) {
                 viewModel.setKPatchNextEnabled(enabled)
             }
         },

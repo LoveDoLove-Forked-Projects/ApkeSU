@@ -8,6 +8,11 @@ import androidx.annotation.StringRes
 import kotlinx.parcelize.IgnoredOnParcel
 import kotlinx.parcelize.Parcelize
 import me.weishu.kernelsu.R
+import me.weishu.kernelsu.ui.util.BootPatchMode
+
+internal fun BootPatchMode.supportsInstallMethod(method: InstallMethod?): Boolean =
+    this != BootPatchMode.NativeKpm || method is InstallMethod.SelectFile ||
+        method is InstallMethod.DownloadFile && method.partition == "boot"
 
 @Parcelize
 internal sealed class InstallMethod : Parcelable {

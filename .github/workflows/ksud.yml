@@ -51,6 +51,12 @@ jobs:
       with:
         ndk-version: r29
 
+    - name: Build Native GKI KPM patch tools
+      if: ${{ inputs.target == 'aarch64-linux-android' }}
+      env:
+        ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
+      run: bash scripts/build_kernelpatch.sh
+
     - name: Build ksud
       env:
         ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}

@@ -2,12 +2,20 @@ package me.weishu.kernelsu.ui
 
 import androidx.compose.ui.unit.dp
 import me.weishu.kernelsu.ui.component.bottombar.MainDestination
+import me.weishu.kernelsu.ui.component.bottombar.labelFor
 import me.weishu.kernelsu.ui.component.bottombar.mainDestinations
+import me.weishu.kernelsu.ui.component.bottombar.stateFor
 import me.weishu.kernelsu.ui.component.bottombar.shouldResetMainPagerForFeatureAvailability
+import me.weishu.kernelsu.ui.navigation3.Route
+import me.weishu.kernelsu.ui.util.CustomNavigationIconSet
 import me.weishu.kernelsu.ui.util.CustomNavigationIconSlot
+import me.weishu.kernelsu.ui.util.CustomNavigationIconState
+import me.weishu.kernelsu.ui.util.CustomPageBackgroundTarget
+import me.weishu.kernelsu.ui.util.KpmCaps
 import me.weishu.kernelsu.ui.util.KPatchNextStatus
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -148,6 +156,44 @@ class MainLayoutTest {
     }
 
     @Test
+    fun kpmCapabilityProbeSeparatesNativeGkiFromKpatchNext() {
+        assertEquals(
+            KpmPageAvailability.Active,
+            KpmPageAvailability.fromCaps(
+                KpmCaps(
+                    backend = "native-gki",
+                    managementAvailable = true,
+                    loaderReady = false,
+                ),
+            ),
+        )
+        assertEquals(
+            KpmPageAvailability.Inactive,
+            KpmPageAvailability.fromCaps(
+                KpmCaps(
+                    backend = "native-gki",
+                    managementAvailable = true,
+                    lateLoad = true,
+                ),
+            ),
+        )
+        assertEquals(
+            KpmPageAvailability.Active,
+            KpmPageAvailability.fromCaps(
+                KpmCaps(backend = "kpatch-next", managementAvailable = true),
+            ),
+        )
+        assertEquals(
+            KpmPageAvailability.Inactive,
+            KpmPageAvailability.fromCaps(KpmCaps(backend = "none")),
+        )
+        assertEquals(
+            KpmPageAvailability.Unknown,
+            KpmPageAvailability.fromCaps(KpmCaps(error = "probe failed")),
+        )
+    }
+
+    @Test
     fun destinationMappingKeepsTheCurrentLogicalPageWhenKpmChanges() {
         assertEquals(
             2,
@@ -170,5 +216,28 @@ class MainLayoutTest {
     @Test
     fun kpmDestinationUsesItsOwnCustomNavigationIconSlot() {
         assertEquals(CustomNavigationIconSlot.Kpm, MainDestination.Kpm.slot)
+    }
+
+    @Test
+    fun kpmDestinationResolvesItsOwnCustomNavigationPresentation() {
+        val kpmIcon = CustomNavigationIconState(
+            uriString = "content://theme/kpm",
+            labelOverride = "Native KPM",
+        )
+        val icons = CustomNavigationIconSet(kpm = kpmIcon)
+
+        assertEquals(kpmIcon, icons.stateFor(MainDestination.Kpm))
+        assertEquals("Native KPM", icons.labelFor(MainDestination.Kpm, "KPM"))
+        assertEquals(
+            CustomNavigationIconState(),
+            icons.stateFor(MainDestination.Module),
+        )
+    }
+
+    @Test
+    fun directKpmRouteUsesTheKpmBackgroundTarget() {
+        assertEquals(CustomPageBackgroundTarget.Kpm, customPageBackgroundTarget(Route.Kpm))
+        assertEquals(CustomPageBackgroundTarget.Install, customPageBackgroundTarget(Route.Install))
+        assertNull(customPageBackgroundTarget(Route.Settings))
     }
 }

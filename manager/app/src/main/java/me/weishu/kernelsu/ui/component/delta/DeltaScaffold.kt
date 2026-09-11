@@ -71,6 +71,10 @@ import me.weishu.kernelsu.ui.theme.DeltaColorVariant
 import me.weishu.kernelsu.ui.theme.LocalDeltaColorVariant
 import me.weishu.kernelsu.ui.theme.immersiveTopBarColor
 import me.weishu.kernelsu.ui.theme.isInDarkTheme
+import me.weishu.kernelsu.ui.component.bottombar.NavigationDestinationIcon
+import me.weishu.kernelsu.ui.component.bottombar.stateFor
+import me.weishu.kernelsu.ui.util.CustomNavigationIconState
+import me.weishu.kernelsu.ui.util.LocalCustomNavigationIcons
 
 private data class DeltaPalette(
     val background: Color,
@@ -612,6 +616,7 @@ fun DeltaBottomBar(
     modifier: Modifier = Modifier,
 ) {
     val navBottom = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
+    val customIcons = LocalCustomNavigationIcons.current
     Row(
         modifier = modifier
             .fillMaxWidth()
@@ -628,6 +633,7 @@ fun DeltaBottomBar(
         destinations.forEachIndexed { index, destination ->
             DeltaNavItem(
                 destination = destination,
+                state = customIcons.stateFor(destination),
                 selected = selectedIndex == index,
                 onClick = { onSelected(index) },
                 modifier = Modifier.weight(if (selectedIndex == index) 1.35f else 1f),
@@ -639,10 +645,12 @@ fun DeltaBottomBar(
 @Composable
 private fun DeltaNavItem(
     destination: MainDestination,
+    state: CustomNavigationIconState,
     selected: Boolean,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val label = state.displayLabel(stringResource(destination.label))
     Row(
         modifier = modifier
             .fillMaxSize()
@@ -653,16 +661,17 @@ private fun DeltaNavItem(
         horizontalArrangement = Arrangement.Center,
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Icon(
-            imageVector = destination.icon,
-            contentDescription = stringResource(destination.label),
+        NavigationDestinationIcon(
+            destination = destination,
+            state = state,
+            contentDescription = label,
             tint = if (selected) DeltaColors.Ink else DeltaColors.Muted,
             modifier = Modifier.size(26.dp),
         )
         if (selected) {
             Spacer(modifier = Modifier.width(6.dp))
             Text(
-                text = stringResource(destination.label),
+                text = label,
                 color = DeltaColors.Ink,
                 fontSize = deltaSp(13f, maxScale = 1.0f),
                 lineHeight = deltaSp(15f, maxScale = 1.0f),

@@ -32,9 +32,13 @@ ApkeSU 是基于 [KernelSU](https://github.com/tiann/KernelSU) 官方上游仓�
 
 本项目继承 KernelSU 的开源授权结构：`kernel/` 目录遵循上游 KernelSU/Linux kernel 的 **GPL-2.0-only** 授权；除 `kernel/` 之外的 KernelSU 衍生代码遵循 **GPL-3.0-or-later** 授权；第三方依赖遵循各自上游许可证，清单见 [THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md)。
 
+Native GKI KPM 接口的来源、兼容范围、SukiSU-Ultra 参考提交、KernelPatch
+快照和许可证边界见 [SukiSU 兼容 GKI KPM 声明](./docs/SUKISU_KPM_NOTICE.md)。
+
 ## 主要功能
 
 - **动态管理器**：保留 ApkeSU 内置主管理器，同时允许用户为一个已安装且兼容的管理器授予副管理器权限。身份同时绑定包名、App ID、APK v2 证书大小和证书 SHA-256，并在软件包变化后由内核重新校验。该功能授予完整 Root 管理权限，使用前请阅读[动态管理器安全与使用说明](./docs/DYNAMIC_MANAGER.md)。
+- **Native GKI KPM 接口**：在满足 GKI、AArch64、`CONFIG_KSU=y` 和 `CONFIG_KPM=y` 时提供 SukiSU 兼容的 KPM ABI；LKM 模式继续使用独立的 KPatch-Next 后端。该功能不是 SukiSU-Ultra 官方发行版，使用前请阅读 [KPM 声明](./docs/SUKISU_KPM_NOTICE.md)。
 
 ## 上游项目信息
 

@@ -20,7 +20,14 @@ class SettingsCatalogTest {
             7,
             SettingsCatalog.visibleEntryCount(
                 SettingsCategory.Toolbox,
-                base.copy(isKPatchNextEnabled = true),
+                base.copy(
+                    runtimeModeResolved = true,
+                    isLkmMode = true,
+                    isKPatchNextEnabled = true,
+                    kpmBackend = "kpatch-next",
+                    isKpmManagementAvailable = true,
+                    isKpmCapabilityResolved = true,
+                ),
             ),
         )
     }

@@ -32,9 +32,14 @@ ApkeSU is a derivative open-source project based on the official [KernelSU](http
 
 This project inherits KernelSU's licensing structure: the `kernel/` directory is licensed under **GPL-2.0-only**, in line with upstream KernelSU and the Linux kernel; KernelSU-derived code outside `kernel/` is licensed under **GPL-3.0-or-later**. Third-party dependencies remain under their respective upstream licenses. See [THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md) for details.
 
+See the [SukiSU-compatible GKI KPM notice](./docs/SUKISU_KPM_NOTICE.md) for
+the Native GKI KPM reference commit, KernelPatch snapshot, compatibility
+scope, and licensing boundaries.
+
 ## Key features
 
 - **Dynamic Manager**: keeps the built-in ApkeSU Manager available while allowing one installed compatible application to receive secondary Manager authority. The identity is bound to its package name, App ID, APK v2 certificate size, and certificate SHA-256, then revalidated by the kernel after package changes. This grants full root-management authority; read the [Dynamic Manager security and usage guide](./docs/DYNAMIC_MANAGER.md) before enabling it.
+- **Native GKI KPM interface**: exposes a SukiSU-compatible KPM ABI for AArch64 GKI kernels built with `CONFIG_KSU=y` and `CONFIG_KPM=y`. LKM builds use the separate KPatch-Next backend. This is not an official SukiSU-Ultra distribution; read the [KPM notice](./docs/SUKISU_KPM_NOTICE.md) before use.
 
 ## Upstream project
 

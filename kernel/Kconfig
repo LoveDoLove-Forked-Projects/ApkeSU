@@ -11,6 +11,26 @@ config KSU
 	  To compile as a module, choose M here: the
 	  module will be called kernelsu.
 
+config KPM
+	bool "Enable SukiSU KPM ABI"
+	depends on KSU = y && ARM64
+	default n
+	select KALLSYMS
+	select KALLSYMS_ALL
+	help
+	  Export the SukiSU-compatible KPM ABI from a built-in GKI KernelSU
+	  instance. The ABI is a bridge for a separately boot-integrated KPM
+	  loader; it deliberately does not embed an ELF loader in KernelSU.
+	  KPM is unavailable for LKM and late-load builds.
+
+config KSU_NATIVE_KPM
+	bool
+	depends on KSU = y && ARM64
+	select KPM
+	default n
+	help
+	  Deprecated compatibility symbol. Use CONFIG_KPM instead.
+
 config KSU_DEBUG
 	bool "KernelSU debug mode"
 	depends on KSU

@@ -66,16 +66,20 @@ import androidx.compose.ui.unit.sp
 import me.weishu.kernelsu.R
 import me.weishu.kernelsu.ui.InterfaceStyle
 import me.weishu.kernelsu.ui.LocalInterfaceStyle
+import me.weishu.kernelsu.ui.component.bottombar.NavigationDestinationIcon
 import me.weishu.kernelsu.ui.component.LocalSwitchStyle
 import me.weishu.kernelsu.ui.component.LocalNightBackgroundEffectActive
 import me.weishu.kernelsu.ui.component.StyledSwitch
 import me.weishu.kernelsu.ui.component.SwitchStyle
+import me.weishu.kernelsu.ui.component.bottombar.stateFor
 import me.weishu.kernelsu.ui.component.decoration.uiDecoratedCard
 import me.weishu.kernelsu.ui.component.snow.SnowBackdrop
 import me.weishu.kernelsu.ui.component.snow.SnowCapBand
 import me.weishu.kernelsu.ui.theme.LocalImmersiveBackgroundActive
 import me.weishu.kernelsu.ui.theme.immersiveTopBarColor
 import me.weishu.kernelsu.ui.theme.isInDarkTheme
+import me.weishu.kernelsu.ui.util.CustomNavigationIconState
+import me.weishu.kernelsu.ui.util.LocalCustomNavigationIcons
 
 private data class AlphaPalette(
     val background: Color,
@@ -787,6 +791,7 @@ fun AlphaBottomBar(
 ) {
     val navBottom = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
     val delta = isDeltaStyle()
+    val customIcons = LocalCustomNavigationIcons.current
     if (isSnowStyle()) {
         Box(
             modifier = modifier
@@ -818,6 +823,7 @@ fun AlphaBottomBar(
                 destinations.forEachIndexed { index, destination ->
                     AlphaNavItem(
                         destination = destination,
+                        state = customIcons.stateFor(destination),
                         selected = selectedIndex == index,
                         onClick = { onSelected(index) },
                         modifier = Modifier.weight(1f),
@@ -849,6 +855,7 @@ fun AlphaBottomBar(
         destinations.forEachIndexed { index, destination ->
             AlphaNavItem(
                 destination = destination,
+                state = customIcons.stateFor(destination),
                 selected = selectedIndex == index,
                 onClick = { onSelected(index) },
                 modifier = Modifier.weight(1f),
@@ -860,10 +867,12 @@ fun AlphaBottomBar(
 @Composable
 private fun AlphaNavItem(
     destination: MainDestination,
+    state: CustomNavigationIconState,
     selected: Boolean,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val label = state.displayLabel(stringResource(destination.label))
     if (isDeltaStyle()) {
         Row(
             modifier = modifier
@@ -875,16 +884,17 @@ private fun AlphaNavItem(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.Center,
         ) {
-            Icon(
-                imageVector = destination.icon,
-                contentDescription = stringResource(destination.label),
+            NavigationDestinationIcon(
+                destination = destination,
+                state = state,
+                contentDescription = label,
                 tint = AlphaColors.Text,
                 modifier = Modifier.size(29.dp),
             )
             if (selected) {
                 Spacer(modifier = Modifier.width(6.dp))
                 Text(
-                    text = stringResource(destination.label),
+                    text = label,
                     color = AlphaColors.Text,
                     fontSize = alphaSp(14f, maxScale = 1.0f),
                     lineHeight = alphaSp(16f, maxScale = 1.0f),
@@ -907,14 +917,15 @@ private fun AlphaNavItem(
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.Center,
         ) {
-            Icon(
-                imageVector = destination.icon,
-                contentDescription = stringResource(destination.label),
+            NavigationDestinationIcon(
+                destination = destination,
+                state = state,
+                contentDescription = label,
                 tint = color,
                 modifier = Modifier.size(26.dp),
             )
             Text(
-                text = stringResource(destination.label),
+                text = label,
                 color = color,
                 fontSize = alphaSp(12f, maxScale = 1.0f),
                 lineHeight = alphaSp(14f, maxScale = 1.0f),
@@ -935,6 +946,7 @@ fun AlphaNavigationRail(
 ) {
     val topPadding = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
     val bottomPadding = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
+    val customIcons = LocalCustomNavigationIcons.current
     Column(
         modifier = modifier
             .fillMaxHeight()
@@ -964,6 +976,7 @@ fun AlphaNavigationRail(
         destinations.forEachIndexed { index, destination ->
             AlphaRailItem(
                 destination = destination,
+                state = customIcons.stateFor(destination),
                 selected = selectedIndex == index,
                 onClick = { onSelected(index) },
             )
@@ -975,10 +988,12 @@ fun AlphaNavigationRail(
 @Composable
 private fun AlphaRailItem(
     destination: MainDestination,
+    state: CustomNavigationIconState,
     selected: Boolean,
     onClick: () -> Unit,
 ) {
     val color = if (selected) AlphaColors.Accent else AlphaColors.Muted
+    val label = state.displayLabel(stringResource(destination.label))
     Column(
         modifier = Modifier
             .padding(vertical = 4.dp)
@@ -990,14 +1005,15 @@ private fun AlphaRailItem(
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center,
     ) {
-        Icon(
-            imageVector = destination.icon,
-            contentDescription = stringResource(destination.label),
+        NavigationDestinationIcon(
+            destination = destination,
+            state = state,
+            contentDescription = label,
             tint = color,
             modifier = Modifier.size(25.dp),
         )
         Text(
-            text = stringResource(destination.label),
+            text = label,
             color = color,
             fontSize = alphaSp(11f, maxScale = 1.0f),
             lineHeight = alphaSp(13f, maxScale = 1.0f),

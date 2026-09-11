@@ -24,6 +24,9 @@
 #include "sulog/event.h"
 #include "sulog/fd.h"
 #include "supercall/supercall.h"
+#ifdef CONFIG_KPM
+#include "kpm/kpm.h"
+#endif
 
 static int do_grant_root(void __user *arg)
 {
@@ -43,6 +46,12 @@ static int do_grant_root(void __user *arg)
 static int do_get_info(void __user *arg)
 {
     struct ksu_get_info_cmd cmd = { .version = KERNEL_SU_VERSION, .flags = 0 };
+
+#ifdef CONFIG_KPM
+#ifndef MODULE
+    cmd.flags |= KSU_GET_INFO_FLAG_NATIVE_KPM;
+#endif
+#endif
 
 #ifdef MODULE
     cmd.flags |= KSU_GET_INFO_FLAG_LKM;
@@ -74,6 +83,12 @@ static int do_get_info(void __user *arg)
 static int do_get_info_legacy(void __user *arg)
 {
     struct ksu_get_info_legacy_cmd cmd = { .version = KERNEL_SU_VERSION, .flags = 0 };
+
+#ifdef CONFIG_KPM
+#ifndef MODULE
+    cmd.flags |= KSU_GET_INFO_FLAG_NATIVE_KPM;
+#endif
+#endif
 
 #ifdef MODULE
     cmd.flags |= KSU_GET_INFO_FLAG_LKM;
@@ -773,6 +788,61 @@ static int do_disable_escape_to_root(void __user *arg)
     return 0;
 }
 
+static int do_enable_kpm(void __user *arg)
+{
+    struct ksu_enable_kpm_cmd cmd = {
+        .enabled = IS_ENABLED(CONFIG_KPM) && !ksu_late_loaded,
+    };
+
+    if (copy_to_user(arg, &cmd, sizeof(cmd))) {
+        pr_err("enable_kpm: copy_to_user failed\n");
+        return -EFAULT;
+    }
+
+    return 0;
+}
+
+static int do_get_kpm_caps(void __user *arg)
+{
+    struct ksu_kpm_caps_cmd cmd = {
+        .abi_version = 0,
+        .backend = KSU_KPM_BACKEND_NONE,
+        .capabilities = 0,
+        .max_image_size = 0,
+        .max_loaded = 0,
+        .max_name_len = 0,
+        .max_args_len = 0,
+        .probe_error = -EOPNOTSUPP,
+        .loader_ready = 0,
+        .late_load = ksu_late_loaded ? 1 : 0,
+    };
+
+#if defined(CONFIG_KPM) && !defined(MODULE)
+    if (!ksu_late_loaded) {
+        cmd.abi_version = 1;
+        cmd.backend = KSU_KPM_BACKEND_NATIVE_GKI;
+        cmd.capabilities = KSU_KPM_CAP_ABI;
+        cmd.max_image_size = 4 * 1024 * 1024;
+        cmd.max_loaded = 64;
+        cmd.max_name_len = 31;
+        cmd.max_args_len = 1023;
+        cmd.loader_ready = sukisu_kpm_loader_ready() ? 1 : 0;
+        if (cmd.loader_ready) {
+            cmd.capabilities |= KSU_KPM_CAP_LOAD | KSU_KPM_CAP_UNLOAD |
+                                KSU_KPM_CAP_LIST | KSU_KPM_CAP_CONTROL |
+                                KSU_KPM_CAP_INFO | KSU_KPM_CAP_VERSION;
+            cmd.probe_error = 0;
+        }
+    }
+#endif
+
+    if (copy_to_user(arg, &cmd, sizeof(cmd))) {
+        pr_err("get_kpm_caps: copy_to_user failed\n");
+        return -EFAULT;
+    }
+    return 0;
+}
+
 // IOCTL handlers mapping table
 // clang-format off
 static const struct ksu_ioctl_cmd_map ksu_ioctl_handlers[] = {
@@ -940,6 +1010,26 @@ static const struct ksu_ioctl_cmd_map ksu_ioctl_handlers[] = {
         .handler = do_get_managers,
         .perm_check = manager_or_root
     },
+    {
+        .cmd = KSU_IOCTL_ENABLE_KPM,
+        .name = "GET_ENABLE_KPM",
+        .handler = do_enable_kpm,
+        .perm_check = manager_or_root
+    },
+    {
+        .cmd = KSU_IOCTL_GET_KPM_CAPS,
+        .name = "GET_KPM_CAPS",
+        .handler = do_get_kpm_caps,
+        .perm_check = manager_or_root
+    },
+#ifdef CONFIG_KPM
+    {
+        .cmd = KSU_IOCTL_KPM,
+        .name = "KPM_OPERATION",
+        .handler = do_kpm,
+        .perm_check = manager_or_root
+    },
+#endif
     {
         .cmd = 0,
         .name = NULL,

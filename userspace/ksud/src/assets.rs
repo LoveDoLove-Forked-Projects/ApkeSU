@@ -14,7 +14,7 @@ mod android {
 
     pub fn ensure_binaries(ignore_if_exist: bool) -> anyhow::Result<()> {
         for file in Asset::iter() {
-            if file == "ksuinit" || file.ends_with(".ko") {
+            if matches!(file.as_ref(), "ksuinit" | "kpimg" | "kptools") || file.ends_with(".ko") {
                 // don't extract ksuinit and kernel modules
                 continue;
             }

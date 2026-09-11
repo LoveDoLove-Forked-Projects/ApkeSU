@@ -5,12 +5,12 @@ use serde_json::{Value, json};
 #[cfg(target_os = "android")]
 use std::os::fd::AsRawFd;
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fs::{self, OpenOptions},
     io::{self, Read, Write},
     path::{Component, Path, PathBuf},
     process::Command,
-    time::{Duration, Instant, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use crate::{boot_patch, defs, module, utils};
@@ -23,6 +23,9 @@ const LOG_PATH: &str = concatcp!(RESCUE_DIR, "rescue.log");
 const BOOT_COUNT_PATH: &str = concatcp!(RESCUE_DIR, "boot_count");
 const BOOT_OK_PATH: &str = concatcp!(RESCUE_DIR, "boot_ok");
 const PENDING_BOOT_PATH: &str = concatcp!(RESCUE_DIR, "pending_boot");
+// Written after an image restore and removed only after the next boot reaches
+// boot-completed.  The legacy lock below is read only for migration.
+const RESTORE_PENDING_BOOT_PATH: &str = concatcp!(RESCUE_DIR, "restore_pending_boot.json");
 const RESTORE_LOCK_PATH: &str = concatcp!(RESCUE_DIR, "restore_done.lock");
 const RESTORE_TRANSACTION_PATH: &str = concatcp!(RESCUE_DIR, "restore_transaction.json");
 const AUTO_RESTORE_ATTEMPTS_PATH: &str = concatcp!(RESCUE_DIR, "auto_restore_attempts");
@@ -76,6 +79,21 @@ struct RestoreTransaction {
     started_at: String,
     updated_at: String,
     entries: Vec<RestoreTransactionEntry>,
+}
+
+#[derive(Clone, Debug, Default)]
+struct RestorePendingBoot {
+    transaction_id: String,
+    armed_boot_id: String,
+    validation_boot_id: String,
+    armed_at: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RestorePendingBootState {
+    None,
+    Current,
+    Previous,
 }
 
 fn coded_error(code: &str, message: impl AsRef<str>) -> anyhow::Error {
@@ -161,19 +179,30 @@ enum BootRescueAction {
     DisableModules,
 }
 
-const fn post_fs_data_rescue_action(
+#[allow(clippy::struct_excessive_bools)]
+#[derive(Clone, Copy, Debug, Default)]
+struct BootRescueSignals {
     pending_boot: bool,
+    restore_pending_boot: bool,
+    restore_transaction_pending: bool,
     previous_boot_ok: bool,
     boot_count: u32,
     failure_hint: bool,
-) -> BootRescueAction {
-    if pending_boot
-        && (failure_hint || (boot_count >= PENDING_BOOT_FAILURE_TRIGGER_COUNT && !previous_boot_ok))
-    {
+}
+
+const fn post_fs_data_rescue_action(signals: BootRescueSignals) -> BootRescueAction {
+    let repeated_boot_failure = signals.boot_count >= PENDING_BOOT_FAILURE_TRIGGER_COUNT;
+    let restore_requested = signals.restore_transaction_pending
+        || (signals.restore_pending_boot && (signals.failure_hint || repeated_boot_failure))
+        || (signals.pending_boot
+            && (signals.failure_hint || (repeated_boot_failure && !signals.previous_boot_ok)));
+    if restore_requested {
         BootRescueAction::RestoreBackups
-    } else if !pending_boot
-        && (failure_hint
-            || (boot_count >= MODULE_RESCUE_FAILURE_TRIGGER_COUNT && !previous_boot_ok))
+    } else if !signals.pending_boot
+        && !signals.restore_pending_boot
+        && !signals.restore_transaction_pending
+        && !signals.previous_boot_ok
+        && (signals.failure_hint || signals.boot_count >= MODULE_RESCUE_FAILURE_TRIGGER_COUNT)
     {
         // An unverified image must never be overwritten solely because a normal
         // boot was interrupted. Recover modules first; image rollback stays tied
@@ -184,14 +213,13 @@ const fn post_fs_data_rescue_action(
     }
 }
 
-const fn recovery_boot_rescue_action(
-    pending_boot: bool,
-    failure_hint: bool,
-    boot_count: u32,
-) -> BootRescueAction {
-    if pending_boot && (failure_hint || boot_count >= PENDING_BOOT_FAILURE_TRIGGER_COUNT) {
+const fn recovery_boot_rescue_action(signals: BootRescueSignals) -> BootRescueAction {
+    let restore_requested = signals.restore_transaction_pending
+        || ((signals.pending_boot || signals.restore_pending_boot)
+            && (signals.failure_hint || signals.boot_count >= PENDING_BOOT_FAILURE_TRIGGER_COUNT));
+    if restore_requested {
         BootRescueAction::RestoreBackups
-    } else if failure_hint {
+    } else if signals.failure_hint {
         BootRescueAction::DisableModules
     } else {
         BootRescueAction::None
@@ -225,6 +253,26 @@ pub fn print_status() {
         || transaction
             .as_ref()
             .is_some_and(|transaction| !matches!(transaction.phase.as_str(), "completed" | "idle"));
+    let restore_pending = read_restore_pending_boot();
+    let restore_boot_state = restore_pending.as_ref().map_or("none", |marker| {
+        match restore_pending_boot_state_from_marker(
+            marker,
+            &current_boot_id().unwrap_or_default(),
+            read_boot_count(),
+        ) {
+            RestorePendingBootState::None => "none",
+            RestorePendingBootState::Current => "validating",
+            RestorePendingBootState::Previous => "interrupted",
+        }
+    });
+    // A completed transaction is not a completed restore until the first
+    // post-restore boot has passed validation. Keep that distinction visible
+    // while the rollback marker is still armed.
+    let last_restore_done = restore_pending.is_none()
+        && (Path::new(RESTORE_LOCK_PATH).exists()
+            || transaction
+                .as_ref()
+                .is_some_and(|transaction| transaction.phase == "completed"));
     let verification_current = verification_marker_is_current(&specs, &manifest);
     let config_changed = Path::new(CONFIG_CHANGED_PATH).exists();
     let phase = rescue_phase(
@@ -245,11 +293,14 @@ pub fn print_status() {
         "images": specs.iter().map(|spec| image_status(spec, &manifest, false)).collect::<Vec<_>>(),
         "bootCount": read_boot_count(),
         "autoRestoreAttempts": read_auto_restore_attempts(),
-        "pendingBoot": Path::new(PENDING_BOOT_PATH).exists(),
+        "pendingBoot": Path::new(PENDING_BOOT_PATH).exists() || restore_pending.is_some(),
+        "pendingImageBoot": Path::new(PENDING_BOOT_PATH).exists(),
+        "restorePendingBoot": restore_pending.is_some(),
+        "restoreBootState": restore_boot_state,
         "currentSlot": current_slot(),
         "bootMode": boot_mode(),
         "device": device_summary(),
-        "lastRestoreDone": Path::new(RESTORE_LOCK_PATH).exists(),
+        "lastRestoreDone": last_restore_done,
         "skipModulesOnce": skip_modules_once_exists(),
         "skipModulesThisBoot": should_skip_modules_this_boot(),
         "manifest": manifest,
@@ -488,6 +539,11 @@ pub fn backup(force: bool) -> Result<()> {
                 if spec.required {
                     bail!("{} partition is missing", spec.name);
                 }
+                // Do not leave an old optional image looking usable when the
+                // partition disappeared. The previous file is already
+                // protected by preserve_files and can still be restored if
+                // a later backup step fails.
+                remove_file_if_exists(Path::new(&spec.image_path))?;
                 append_log(format!("skip backup: {} partition not found", spec.name));
                 continue;
             };
@@ -512,6 +568,9 @@ pub fn backup(force: bool) -> Result<()> {
 }
 
 pub fn enable() -> Result<()> {
+    // Enabling must never erase evidence for an image change that has not
+    // survived a boot yet. An explicit disable remains the escape hatch.
+    ensure_no_active_restore_transaction()?;
     let config = read_config()?;
     let specs = partition_specs(&config);
     validate_backups_quick(&config)?;
@@ -523,7 +582,7 @@ pub fn enable() -> Result<()> {
         ));
     }
     utils::ensure_dir_exists(RESCUE_DIR)?;
-    clear_runtime_markers();
+    clear_runtime_markers()?;
     write_failure_baseline()?;
     atomic_write(Path::new(ENABLED_PATH), b"1").context("failed to enable rescue protection")?;
     let initialize_result = (|| -> Result<()> {
@@ -550,13 +609,13 @@ pub fn disable() -> Result<()> {
     remove_file_if_exists(Path::new(AUTO_RESTORE_ATTEMPTS_PATH))?;
     remove_file_if_exists(Path::new(BOOT_OK_PATH))?;
     remove_file_if_exists(Path::new(FAILURE_BASELINE_PATH))?;
-    clear_runtime_markers();
+    clear_runtime_markers()?;
     append_log("rescue protection disabled");
     Ok(())
 }
 
 fn ensure_no_active_restore_transaction() -> Result<()> {
-    if let Some(transaction) = read_restore_transaction()?
+    if let Some(transaction) = read_restore_transaction_for_restore()?
         && !matches!(transaction.phase.as_str(), "completed" | "idle")
     {
         return Err(coded_error(
@@ -567,11 +626,29 @@ fn ensure_no_active_restore_transaction() -> Result<()> {
             ),
         ));
     }
+    if read_restore_pending_boot().is_some() {
+        return Err(coded_error(
+            "rescue.restore_validation_pending",
+            "a restored image is still awaiting boot validation; complete or recover that boot before changing rescue backups",
+        ));
+    }
+    if Path::new(PENDING_BOOT_PATH).exists() {
+        return Err(coded_error(
+            "rescue.image_validation_pending",
+            "an image change is still awaiting boot validation; complete or recover that boot before changing rescue backups",
+        ));
+    }
     Ok(())
 }
 
 fn pause_protection_for_backup_change(reason: &str) -> Result<()> {
     utils::ensure_dir_exists(RESCUE_DIR)?;
+    if read_restore_pending_boot().is_some() || Path::new(PENDING_BOOT_PATH).exists() {
+        return Err(coded_error(
+            "rescue.validation_pending",
+            "cannot clear rescue runtime markers while an image change is awaiting boot validation",
+        ));
+    }
     let was_enabled =
         invalidate_protection_markers_at(Path::new(ENABLED_PATH), Path::new(VERIFIED_PATH))?;
     for path in [
@@ -582,7 +659,7 @@ fn pause_protection_for_backup_change(reason: &str) -> Result<()> {
     ] {
         remove_file_if_exists(Path::new(path))?;
     }
-    clear_runtime_markers();
+    clear_runtime_markers()?;
     if was_enabled {
         append_log(format!("rescue protection paused because {reason}"));
     } else {
@@ -607,23 +684,452 @@ pub fn restore_keep_data_now() -> Result<()> {
     restore_backups("manual data-preserving rollback", false)
 }
 
+fn ensure_restore_validation_can_start() -> Result<()> {
+    if read_restore_pending_boot().is_some()
+        && restore_pending_boot_state(read_boot_count()) != RestorePendingBootState::Previous
+    {
+        return Err(coded_error(
+            "rescue.restore_validation_pending",
+            "a previous restore is still awaiting boot validation",
+        ));
+    }
+    Ok(())
+}
+
+fn write_restore_pending_boot(transaction: &RestoreTransaction) -> Result<()> {
+    let marker = RestorePendingBoot {
+        transaction_id: transaction.id.clone(),
+        armed_boot_id: current_boot_id().unwrap_or_default(),
+        validation_boot_id: String::new(),
+        armed_at: Local::now().to_rfc3339(),
+    };
+    write_restore_pending_boot_marker(&marker)
+}
+
+// Prefer the new field, but only accept the legacy field when it agrees with
+// it.  A malformed or conflicting marker must be treated as unconsumed so a
+// boot-completed callback cannot erase the only recovery evidence.
+fn marker_armed_boot_id(marker: &Value) -> Option<String> {
+    match (marker.get("armedBootId"), marker.get("bootId")) {
+        (Some(new), Some(legacy)) => {
+            let new = new.as_str()?;
+            let legacy = legacy.as_str()?;
+            (new == legacy).then(|| new.to_owned())
+        }
+        (Some(value), None) | (None, Some(value)) => value.as_str().map(ToOwned::to_owned),
+        (None, None) => None,
+    }
+}
+
+fn read_restore_pending_boot() -> Option<RestorePendingBoot> {
+    if Path::new(RESTORE_PENDING_BOOT_PATH).exists() {
+        let Some(value) = read_json_file(RESTORE_PENDING_BOOT_PATH) else {
+            append_log("restore boot validation marker is invalid; using counter fallback");
+            return Some(RestorePendingBoot::default());
+        };
+        return Some(RestorePendingBoot {
+            transaction_id: value
+                .get("transactionId")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned(),
+            // `bootId` was the field used by the first version of this marker;
+            // keep accepting it when no conflicting new field is present.
+            armed_boot_id: marker_armed_boot_id(&value).unwrap_or_default(),
+            validation_boot_id: value
+                .get("validationBootId")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned(),
+            armed_at: value
+                .get("armedAt")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned(),
+        });
+    }
+
+    // Older ApkeSU builds used a plain lock file.  Treat the first boot seen
+    // after migration as the validation boot, rather than as the boot that
+    // armed the restore.  Otherwise a failed restore would get one extra
+    // reboot before it could be recovered.
+    if !Path::new(RESTORE_LOCK_PATH).exists() {
+        return None;
+    }
+    let marker = RestorePendingBoot {
+        transaction_id: "legacy-restore".to_owned(),
+        armed_boot_id: String::new(),
+        validation_boot_id: current_boot_id().unwrap_or_default(),
+        armed_at: Local::now().to_rfc3339(),
+    };
+    if let Err(error) = write_restore_pending_boot_marker(&marker) {
+        append_log(format!(
+            "failed to migrate legacy restore lock; using counter fallback: {error:#}"
+        ));
+    } else if let Err(error) = remove_file_if_exists(Path::new(RESTORE_LOCK_PATH)) {
+        append_log(format!(
+            "failed to remove migrated legacy restore lock: {error:#}"
+        ));
+    }
+    Some(marker)
+}
+
+fn write_restore_pending_boot_marker(marker: &RestorePendingBoot) -> Result<()> {
+    let value = json!({
+        "schemaVersion": 2,
+        "transactionId": marker.transaction_id,
+        "armedBootId": marker.armed_boot_id,
+        // Keep the old key for one release so an older Manager can still
+        // display the marker without changing its meaning.
+        "bootId": marker.armed_boot_id,
+        "validationBootId": marker.validation_boot_id,
+        "armedAt": marker.armed_at,
+    });
+    atomic_write(
+        Path::new(RESTORE_PENDING_BOOT_PATH),
+        value.to_string().as_bytes(),
+    )
+    .context("failed to persist restore boot validation marker")
+}
+
+fn restore_pending_boot_state(boot_count: u32) -> RestorePendingBootState {
+    let Some(marker) = read_restore_pending_boot() else {
+        return RestorePendingBootState::None;
+    };
+    let current_boot_id = current_boot_id().unwrap_or_default();
+
+    if !marker.validation_boot_id.is_empty() {
+        if !current_boot_id.is_empty() && marker.validation_boot_id == current_boot_id {
+            return RestorePendingBootState::Current;
+        }
+        if current_boot_id.is_empty() && boot_count < PENDING_BOOT_FAILURE_TRIGGER_COUNT {
+            return RestorePendingBootState::Current;
+        }
+        return RestorePendingBootState::Previous;
+    }
+
+    if !marker.armed_boot_id.is_empty() && !current_boot_id.is_empty() {
+        if marker.armed_boot_id == current_boot_id {
+            // The restore command can be invoked more than once before the
+            // reboot request is accepted. Do not start another restore in the
+            // boot that created the marker.
+            return RestorePendingBootState::Current;
+        }
+
+        let mut observed = marker;
+        observed.validation_boot_id = current_boot_id;
+        if let Err(error) = write_restore_pending_boot_marker(&observed) {
+            append_log(format!(
+                "failed to persist restore validation boot ID; using counter fallback: {error:#}"
+            ));
+            if boot_count >= PENDING_BOOT_FAILURE_TRIGGER_COUNT {
+                return RestorePendingBootState::Previous;
+            }
+        }
+        return RestorePendingBootState::Current;
+    }
+
+    if boot_count >= PENDING_BOOT_FAILURE_TRIGGER_COUNT {
+        RestorePendingBootState::Previous
+    } else {
+        // A missing boot ID is unusual. Give one boot a chance to reach the
+        // completion callback, then use the persistent counter as fallback.
+        RestorePendingBootState::Current
+    }
+}
+
+fn restore_pending_boot_state_from_marker(
+    marker: &RestorePendingBoot,
+    current_boot_id: &str,
+    boot_count: u32,
+) -> RestorePendingBootState {
+    if !marker.validation_boot_id.is_empty() {
+        if marker.validation_boot_id == current_boot_id
+            || (current_boot_id.is_empty() && boot_count < PENDING_BOOT_FAILURE_TRIGGER_COUNT)
+        {
+            RestorePendingBootState::Current
+        } else {
+            RestorePendingBootState::Previous
+        }
+    } else if !marker.armed_boot_id.is_empty() && marker.armed_boot_id == current_boot_id {
+        RestorePendingBootState::Current
+    } else if marker.armed_boot_id.is_empty() || current_boot_id.is_empty() {
+        if boot_count >= PENDING_BOOT_FAILURE_TRIGGER_COUNT {
+            RestorePendingBootState::Previous
+        } else {
+            RestorePendingBootState::Current
+        }
+    } else {
+        // The marker may have been created on an earlier boot while the
+        // validation boot ID could not be persisted. Use the durable counter
+        // as a bounded fallback instead of keeping modules skipped forever.
+        if boot_count >= PENDING_BOOT_FAILURE_TRIGGER_COUNT {
+            RestorePendingBootState::Previous
+        } else {
+            RestorePendingBootState::Current
+        }
+    }
+}
+
+fn pending_boot_armed_in_current_boot() -> bool {
+    if !Path::new(PENDING_BOOT_PATH).exists() {
+        return false;
+    }
+    let Some(marker) = read_json_file(PENDING_BOOT_PATH) else {
+        // An unreadable pending marker is safer to preserve than to erase.
+        return true;
+    };
+    let current_boot_id = current_boot_id().ok();
+    marker_armed_in_boot(&marker, current_boot_id.as_deref(), false)
+}
+
+fn marker_armed_in_current_boot_id(marker: &Value, current_boot_id: Option<&str>) -> bool {
+    let Some(current_boot_id) = current_boot_id.filter(|id| !id.is_empty()) else {
+        return false;
+    };
+    marker_armed_boot_id(marker)
+        .is_some_and(|armed_boot_id| !armed_boot_id.is_empty() && armed_boot_id == current_boot_id)
+}
+
+fn pending_boot_marker_is_current_boot() -> bool {
+    let Some(marker) = read_json_file(PENDING_BOOT_PATH) else {
+        return false;
+    };
+    marker_armed_in_current_boot_id(&marker, current_boot_id().ok().as_deref())
+}
+
+fn restore_boot_armed_in_current_boot() -> bool {
+    if !Path::new(RESTORE_PENDING_BOOT_PATH).exists() {
+        return false;
+    }
+    let Some(marker) = read_json_file(RESTORE_PENDING_BOOT_PATH) else {
+        return true;
+    };
+    restore_marker_blocks_boot_commit(&marker, current_boot_id().ok().as_deref())
+}
+
+fn restore_marker_blocks_boot_commit(marker: &Value, current_boot_id: Option<&str>) -> bool {
+    let Some(current_boot_id) = current_boot_id else {
+        return true;
+    };
+    let Some(validation_boot_id) = marker.get("validationBootId").and_then(Value::as_str) else {
+        return true;
+    };
+    if validation_boot_id.is_empty() || validation_boot_id != current_boot_id {
+        return true;
+    }
+
+    // If both fields are present, marker_armed_boot_id rejects conflicts. An
+    // armed ID equal to the validation boot is also inconsistent, so retain
+    // the marker conservatively.
+    let has_armed_boot_field =
+        marker.get("armedBootId").is_some() || marker.get("bootId").is_some();
+    let Some(armed_boot_id) = marker_armed_boot_id(marker) else {
+        // The one supported marker without an armed boot ID is the migration
+        // form generated from the legacy restore lock. Missing, malformed, or
+        // conflicting IDs in every other marker must remain fail-closed.
+        return marker.get("transactionId").and_then(Value::as_str) != Some("legacy-restore")
+            || has_armed_boot_field;
+    };
+    if armed_boot_id.is_empty() {
+        // The only intentionally empty armed ID is the one-time migration of
+        // the old restore lock. Any other missing ID is unverified evidence.
+        return marker.get("transactionId").and_then(Value::as_str) != Some("legacy-restore");
+    }
+    armed_boot_id == current_boot_id
+}
+
+fn marker_armed_in_boot(
+    marker: &Value,
+    current_boot_id: Option<&str>,
+    require_unvalidated: bool,
+) -> bool {
+    let Some(armed_boot_id) = marker_armed_boot_id(marker) else {
+        return true;
+    };
+    if armed_boot_id.is_empty() {
+        return true;
+    }
+    let Some(current_boot_id) = current_boot_id else {
+        return true;
+    };
+    if armed_boot_id != current_boot_id {
+        return false;
+    }
+    if !require_unvalidated {
+        return true;
+    }
+    marker
+        .get("validationBootId")
+        .is_none_or(|value| value.as_str().is_some_and(str::is_empty))
+}
+
+fn restore_transaction_is_pending() -> bool {
+    if !Path::new(RESTORE_TRANSACTION_PATH).exists() {
+        return false;
+    }
+    match read_restore_transaction() {
+        Ok(Some(transaction)) if matches!(transaction.phase.as_str(), "completed" | "idle") => {
+            false
+        }
+        Ok(Some(transaction)) => {
+            if let Err(error) = validate_restore_transaction_shape(&transaction) {
+                match quarantine_invalid_restore_transaction(Path::new(RESTORE_TRANSACTION_PATH)) {
+                    Ok(path) => append_log(format!(
+                        "quarantined structurally invalid restore transaction: {} ({error:#})",
+                        path.display()
+                    )),
+                    Err(quarantine_error) => append_log(format!(
+                        "failed to quarantine structurally invalid restore transaction: {quarantine_error:#}"
+                    )),
+                }
+                // Keep the rescue path active. The next restore attempt will
+                // build a fresh transaction from the verified backup set.
+            }
+            true
+        }
+        Ok(None) => false,
+        Err(error) => {
+            match quarantine_invalid_restore_transaction(Path::new(RESTORE_TRANSACTION_PATH)) {
+                Ok(path) => append_log(format!(
+                    "quarantined invalid restore transaction after parse failure: {}",
+                    path.display()
+                )),
+                Err(quarantine_error) => append_log(format!(
+                    "failed to quarantine invalid restore transaction: {quarantine_error:#}"
+                )),
+            }
+            append_log(format!(
+                "restore transaction cannot be parsed; recovery will be attempted from a fresh transaction: {error:#}"
+            ));
+            true
+        }
+    }
+}
+
+fn read_restore_transaction_for_restore() -> Result<Option<RestoreTransaction>> {
+    match read_restore_transaction() {
+        Ok(Some(transaction)) if !matches!(transaction.phase.as_str(), "completed" | "idle") => {
+            if let Err(error) = validate_restore_transaction_shape(&transaction) {
+                let path =
+                    quarantine_invalid_restore_transaction(Path::new(RESTORE_TRANSACTION_PATH))
+                        .with_context(|| {
+                            format!(
+                                "invalid restore transaction could not be quarantined: {error:#}"
+                            )
+                        })?;
+                append_log(format!(
+                    "quarantined structurally invalid restore transaction before restore: {}",
+                    path.display()
+                ));
+                Ok(None)
+            } else {
+                Ok(Some(transaction))
+            }
+        }
+        Ok(transaction) => Ok(transaction),
+        Err(error) => {
+            let path = quarantine_invalid_restore_transaction(Path::new(RESTORE_TRANSACTION_PATH))
+                .with_context(|| {
+                    format!("invalid restore transaction could not be quarantined: {error:#}")
+                })?;
+            append_log(format!(
+                "quarantined invalid restore transaction before creating a new one: {}",
+                path.display()
+            ));
+            Ok(None)
+        }
+    }
+}
+
+fn quarantine_invalid_restore_transaction(path: &Path) -> Result<PathBuf> {
+    if !path.exists() {
+        bail!("restore transaction disappeared before quarantine")
+    }
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("restore_transaction.json");
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let destination = path.with_file_name(format!(
+        "{file_name}.invalid-{nonce}-{}",
+        std::process::id()
+    ));
+    fs::rename(path, &destination).with_context(|| {
+        format!(
+            "failed to quarantine invalid restore transaction {}",
+            path.display()
+        )
+    })?;
+    if let Some(parent) = path.parent() {
+        sync_parent_directory(parent);
+    }
+    Ok(destination)
+}
+
 pub fn mark_next_boot_pending(reason: &str) -> Result<()> {
     if !is_enabled() {
         return Ok(());
     }
 
+    // A restore validation boot owns the image state until it reaches
+    // boot-completed. An external writer must not replace that marker and
+    // make the restore transaction unrecoverable.
+    if restore_transaction_is_pending() || read_restore_pending_boot().is_some() {
+        return Err(coded_error(
+            "rescue.restore_validation_pending",
+            "an image restore is still awaiting boot validation",
+        ));
+    }
+
+    // Protection may have been left enabled by an older build or by manual
+    // file edits while its verified backup set is no longer usable. Do not
+    // claim to arm verification in that state: a later failure would have no
+    // trusted image to restore.
+    let config = read_config()?;
+    let specs = partition_specs(&config);
+    let manifest = read_manifest()?;
+    if !verification_marker_is_current(&specs, &manifest) {
+        return Err(coded_error(
+            "rescue.full_verification_required",
+            "rescue protection is enabled but its backup set is not fully verified",
+        ));
+    }
+
     utils::ensure_dir_exists(RESCUE_DIR).context("failed to prepare pending boot marker")?;
-    write_failure_baseline()?;
+    if let Err(error) = write_failure_baseline() {
+        // The failure baseline is diagnostic evidence.  A failed baseline must
+        // not discard the core pending marker after an image was flashed.
+        append_log(format!(
+            "failed to refresh failure baseline before pending boot: {error:#}"
+        ));
+    }
+    let armed_boot_id = current_boot_id().unwrap_or_default();
     let pending = json!({
+        "schemaVersion": 2,
         "reason": reason,
         "armedAt": Local::now().to_rfc3339(),
-        "bootId": current_boot_id().unwrap_or_default(),
+        "armedBootId": armed_boot_id,
+        // Keep the legacy key for one release so older boot hooks can still
+        // recognize a pending image change.
+        "bootId": armed_boot_id,
     });
     atomic_write(Path::new(PENDING_BOOT_PATH), pending.to_string().as_bytes())
         .context("failed to write pending boot marker")?;
-    let _ = fs::remove_file(BOOT_OK_PATH);
-    write_boot_count(0);
-    write_auto_restore_attempts(0);
+    remove_file_if_exists(Path::new(BOOT_OK_PATH))?;
+    if let Err(error) = write_boot_count(0) {
+        append_log(format!(
+            "failed to reset boot counter for pending boot: {error:#}"
+        ));
+    }
+    if let Err(error) = write_auto_restore_attempts(0) {
+        append_log(format!(
+            "failed to reset auto restore attempts for pending boot: {error:#}"
+        ));
+    }
     append_log(format!("next boot marked pending: {reason}"));
     Ok(())
 }
@@ -649,6 +1155,7 @@ pub fn clear_logs() -> Result<()> {
 
 pub fn take_skip_modules_once() -> bool {
     if Path::new(SKIP_MODULES_THIS_BOOT_PATH).exists() {
+        consume_skip_module_markers();
         return true;
     }
     let skip_once = skip_modules_once_exists();
@@ -657,12 +1164,14 @@ pub fn take_skip_modules_once() -> bool {
         return false;
     }
 
-    let _ = fs::remove_file(SKIP_MODULES_ONCE_PATH);
-    let _ = fs::remove_file(CACHE_SKIP_MODULES_ONCE_PATH);
-    let _ = fs::remove_file(LEGACY_TMP_MODULE_DISABLE_PATH);
-    if let Err(err) = fs::write(SKIP_MODULES_THIS_BOOT_PATH, b"1") {
+    // Persist the per-boot guard before consuming the durable request. If the
+    // device is out of space or /dev is temporarily unavailable, retaining the
+    // durable marker is safer than silently losing the rescue request.
+    if let Err(err) = atomic_write(Path::new(SKIP_MODULES_THIS_BOOT_PATH), b"1") {
         append_log(format!("failed to mark module skip guard: {err:#}"));
+        return true;
     }
+    consume_skip_module_markers();
     append_log(format!(
         "rescue requested temporary module skip for this boot: skip_once={skip_once}, legacy_skip_once={legacy_skip_once}"
     ));
@@ -671,6 +1180,22 @@ pub fn take_skip_modules_once() -> bool {
 
 pub fn should_skip_modules_this_boot() -> bool {
     Path::new(SKIP_MODULES_THIS_BOOT_PATH).exists()
+        || skip_modules_once_exists()
+        || Path::new(LEGACY_TMP_MODULE_DISABLE_PATH).exists()
+}
+
+fn consume_skip_module_markers() {
+    for path in [
+        SKIP_MODULES_ONCE_PATH,
+        CACHE_SKIP_MODULES_ONCE_PATH,
+        LEGACY_TMP_MODULE_DISABLE_PATH,
+    ] {
+        if let Err(error) = remove_file_if_exists(Path::new(path)) {
+            append_log(format!(
+                "failed to consume module skip marker {path}: {error:#}"
+            ));
+        }
+    }
 }
 
 pub fn check_on_post_fs_data() {
@@ -683,26 +1208,40 @@ pub fn check_on_post_fs_data() {
         return;
     }
 
-    if Path::new(RESTORE_LOCK_PATH).exists() {
-        append_log("restore lock exists; mark boot healthy and skip auto restore");
-        clear_restore_markers();
-        let _ = fs::write(BOOT_OK_PATH, b"1");
-        write_boot_count(0);
-        write_auto_restore_attempts(0);
-        return;
-    }
-
     let previous_boot_ok = Path::new(BOOT_OK_PATH).exists();
     let pending_boot = Path::new(PENDING_BOOT_PATH).exists();
+    if pending_boot && pending_boot_marker_is_current_boot() {
+        // post-fs-data can be invoked again during a soft reboot or by a
+        // vendor init replay. The marker was created in this same boot, so
+        // counting this invocation as another failed boot could roll back a
+        // healthy image before the device has actually rebooted.
+        append_log("pending image marker belongs to the current boot; defer rescue decision");
+        return;
+    }
     let next_count = if previous_boot_ok {
         1
     } else {
         read_boot_count().saturating_add(1)
     };
-    let _ = fs::remove_file(BOOT_OK_PATH);
-    if let Err(err) = fs::write(BOOT_COUNT_PATH, next_count.to_string()) {
-        append_log(format!("failed to update boot counter: {err}"));
+    if let Err(error) = write_boot_count(next_count) {
+        append_log(format!("failed to update boot counter: {error:#}"));
+        return;
     }
+    if let Err(error) = remove_file_if_exists(Path::new(BOOT_OK_PATH)) {
+        append_log(format!("failed to consume healthy boot marker: {error:#}"));
+        return;
+    }
+
+    let restore_state = restore_pending_boot_state(next_count);
+    if restore_state == RestorePendingBootState::Current {
+        append_log(
+            "restored image boot is still being validated; defer healthy marker until boot-completed",
+        );
+        mark_skip_modules_once();
+        return;
+    }
+    let restore_pending_boot = restore_state == RestorePendingBootState::Previous;
+    let restore_transaction_pending = restore_transaction_is_pending();
 
     append_log(format!(
         "post-fs-data rescue check: previous_boot_ok={previous_boot_ok}, pending_boot={pending_boot}, boot_count={next_count}"
@@ -711,13 +1250,24 @@ pub fn check_on_post_fs_data() {
     // On the first patched boot, pstore still describes the boot that performed the
     // flash. Only trust failure evidence after another attempted boot.
     let failure_hint = next_count > 1 && has_boot_failure_hint();
-    match post_fs_data_rescue_action(pending_boot, previous_boot_ok, next_count, failure_hint) {
+    match post_fs_data_rescue_action(BootRescueSignals {
+        pending_boot,
+        restore_pending_boot,
+        restore_transaction_pending,
+        previous_boot_ok,
+        boot_count: next_count,
+        failure_hint,
+    }) {
         BootRescueAction::RestoreBackups => {
             append_log(format!(
                 "auto image rollback triggered on post-fs-data: failure_hint={failure_hint}, pending_boot={pending_boot}, boot_count={next_count}"
             ));
             if let Err(err) = auto_restore_backups() {
-                append_log(format!("auto image rollback failed: {err:#}"));
+                let details = format!("{err:#}");
+                append_log(format!("auto image rollback failed: {details}"));
+                rescue_modules_for_failed_boot(format!(
+                    "automatic image rollback failed; modules were isolated: {details}"
+                ));
             }
         }
         BootRescueAction::DisableModules => {
@@ -744,17 +1294,8 @@ pub fn check_on_recovery_boot() {
         append_log("recovery rescue check already ran in this boot");
         return;
     }
-    if let Err(err) = fs::write(RECOVERY_CHECK_GUARD_PATH, b"1") {
+    if let Err(err) = atomic_write(Path::new(RECOVERY_CHECK_GUARD_PATH), b"1") {
         append_log(format!("failed to write recovery check guard: {err:#}"));
-    }
-
-    if Path::new(RESTORE_LOCK_PATH).exists() {
-        append_log("restore lock exists in recovery; mark boot healthy and skip auto restore");
-        clear_restore_markers();
-        let _ = fs::write(BOOT_OK_PATH, b"1");
-        write_boot_count(0);
-        write_auto_restore_attempts(0);
-        return;
     }
 
     let previous_boot_ok = Path::new(BOOT_OK_PATH).exists();
@@ -764,8 +1305,25 @@ pub fn check_on_recovery_boot() {
     } else {
         read_boot_count().saturating_add(1)
     };
-    let _ = fs::remove_file(BOOT_OK_PATH);
-    write_boot_count(next_count);
+    if let Err(error) = write_boot_count(next_count) {
+        append_log(format!("failed to update recovery boot counter: {error:#}"));
+        return;
+    }
+    if let Err(error) = remove_file_if_exists(Path::new(BOOT_OK_PATH)) {
+        append_log(format!("failed to consume healthy boot marker: {error:#}"));
+        return;
+    }
+
+    let restore_state = restore_pending_boot_state(next_count);
+    if restore_state == RestorePendingBootState::Current {
+        append_log(
+            "restored image recovery boot is still being validated; defer healthy marker until boot-completed",
+        );
+        mark_skip_modules_once();
+        return;
+    }
+    let restore_pending_boot = restore_state == RestorePendingBootState::Previous;
+    let restore_transaction_pending = restore_transaction_is_pending();
 
     let failure_hint = has_boot_failure_hint();
     append_log(format!(
@@ -773,10 +1331,21 @@ pub fn check_on_recovery_boot() {
         boot_mode()
     ));
 
-    match recovery_boot_rescue_action(pending_boot, failure_hint, next_count) {
+    match recovery_boot_rescue_action(BootRescueSignals {
+        pending_boot,
+        restore_pending_boot,
+        restore_transaction_pending,
+        previous_boot_ok,
+        boot_count: next_count,
+        failure_hint,
+    }) {
         BootRescueAction::RestoreBackups => {
             if let Err(err) = auto_restore_backups() {
-                append_log(format!("auto image rollback failed in recovery: {err:#}"));
+                let details = format!("{err:#}");
+                append_log(format!("auto image rollback failed in recovery: {details}"));
+                rescue_modules_for_failed_boot(format!(
+                    "automatic recovery rollback failed; modules were isolated: {details}"
+                ));
             }
         }
         BootRescueAction::DisableModules => {
@@ -800,16 +1369,51 @@ pub fn mark_boot_completed() {
         return;
     }
 
-    let _ = fs::write(BOOT_OK_PATH, b"1");
-    let _ = fs::write(BOOT_COUNT_PATH, b"0");
-    let _ = fs::write(AUTO_RESTORE_ATTEMPTS_PATH, b"0");
-    clear_runtime_markers();
-    cleanup_legacy_rescue_flags();
+    // A restore or external image flash can be initiated before the reboot
+    // request is accepted. Do not turn that still-running boot into a healthy
+    // validation boot and erase the only recovery marker.
+    if restore_transaction_is_pending()
+        || pending_boot_armed_in_current_boot()
+        || restore_boot_armed_in_current_boot()
+    {
+        append_log(
+            "boot-completed arrived while an image change still needs validation; keep rescue markers",
+        );
+        return;
+    }
+
+    if let Err(error) = write_boot_count(0) {
+        append_log(format!(
+            "failed to reset boot counter at boot completion: {error:#}"
+        ));
+        return;
+    }
+    if let Err(error) = write_auto_restore_attempts(0) {
+        append_log(format!(
+            "failed to reset auto restore attempts at boot completion: {error:#}"
+        ));
+        return;
+    }
     if let Err(error) = write_failure_baseline() {
         append_log(format!(
             "failed to refresh boot failure baseline: {error:#}"
         ));
     }
+    // Remove the restore-attempt marker before committing boot_ok. A boot that
+    // reaches this callback has passed the validation point; keeping the
+    // marker would make the next boot look like an interrupted restore. Do not
+    // commit boot_ok if cleanup failed: the next boot must remain rescueable.
+    if let Err(error) = clear_runtime_markers() {
+        append_log(format!(
+            "failed to clear rescue runtime markers at boot completion: {error:#}"
+        ));
+        return;
+    }
+    if let Err(error) = atomic_write(Path::new(BOOT_OK_PATH), b"1") {
+        append_log(format!("failed to commit healthy boot marker: {error:#}"));
+        return;
+    }
+    cleanup_legacy_rescue_flags();
     append_log("boot completed; rescue counter reset");
 }
 
@@ -991,10 +1595,27 @@ fn validate_image_against_partition(
         );
     }
 
-    if verify_sha256 && let Some(expected) = manifest_sha256_from(manifest, &spec.label) {
+    if verify_sha256 {
+        let expected = manifest_sha256_from(manifest, &spec.label)
+            .filter(|digest| is_sha256_digest(digest))
+            .ok_or_else(|| {
+                coded_error(
+                    "rescue.manifest_digest_missing",
+                    format!("{} has no SHA256 in the rescue manifest", spec.label),
+                )
+            })?;
         let actual = cached_sha256(&spec.image_path, refresh_hash);
-        if !expected.is_empty() && expected != actual {
-            bail!("{} backup sha256 mismatch", spec.name);
+        if actual.is_empty() {
+            return Err(coded_error(
+                "rescue.checksum_unavailable",
+                format!("failed to calculate {} backup SHA256", spec.name),
+            ));
+        }
+        if !expected.eq_ignore_ascii_case(&actual) {
+            return Err(coded_error(
+                "rescue.checksum_mismatch",
+                format!("{} backup SHA256 mismatch", spec.name),
+            ));
         }
     }
 
@@ -1095,46 +1716,235 @@ fn saved_slot_specs(config: &RescueConfig) -> Vec<PartitionSpec> {
 fn auto_restore_backups() -> Result<()> {
     let attempts = read_auto_restore_attempts();
     if attempts >= MAX_AUTO_RESTORE_ATTEMPTS {
-        let _ = fs::remove_file(ENABLED_PATH);
+        // Stop retrying before a persistent marker can cause an unbounded
+        // restore loop. Keep the diagnostic counter and transaction record,
+        // but clear only boot-scoped markers first so a later manual recovery
+        // starts from a known state.
+        if let Err(error) = clear_runtime_markers() {
+            append_log(format!(
+                "failed to clear runtime markers after restore limit: {error:#}"
+            ));
+        }
+        if let Err(error) = remove_file_if_exists(Path::new(ENABLED_PATH)) {
+            append_log(format!(
+                "failed to disable rescue protection after restore limit: {error:#}"
+            ));
+        }
         append_log("auto restore attempt limit reached; rescue protection disabled");
         bail!("auto restore attempt limit reached");
     }
-    write_auto_restore_attempts(attempts.saturating_add(1));
+    write_auto_restore_attempts(attempts.saturating_add(1))?;
     restore_backups("auto data-preserving rollback after failed boot", true)
 }
 
-fn restore_backups(reason: &str, automatic: bool) -> Result<()> {
-    let config = read_config()?;
-    let plans = restore_plans(&config)?;
-    let mut selected_plan = None;
-    let mut last_error = None;
-    for plan in plans {
-        match validate_restore_backups(&plan.specs, &config, automatic, true, false) {
-            Ok(()) => {
-                selected_plan = Some(plan);
-                break;
-            }
-            Err(err) => {
-                append_log(format!("skip restore plan '{}': {err:#}", plan.description));
-                last_error = Some(err);
-            }
+fn validate_restore_transaction_shape(transaction: &RestoreTransaction) -> Result<()> {
+    if transaction.entries.is_empty() {
+        return Err(coded_error(
+            "rescue.restore_transaction_invalid",
+            "unfinished restore transaction has no entries",
+        ));
+    }
+    if !matches!(
+        transaction.phase.as_str(),
+        "prepared" | "writing" | "failed" | "awaiting_boot_validation"
+    ) {
+        return Err(coded_error(
+            "rescue.restore_transaction_invalid",
+            format!(
+                "unfinished restore transaction has unsupported phase {}",
+                transaction.phase
+            ),
+        ));
+    }
+    if let Some(slot) = transaction.activate_slot.as_deref()
+        && let Err(error) = bootctl_slot_number(slot)
+    {
+        return Err(coded_error(
+            "rescue.restore_transaction_invalid",
+            format!("invalid restore transaction active slot {slot}: {error:#}"),
+        ));
+    }
+
+    let mut labels = BTreeSet::new();
+    for entry in &transaction.entries {
+        if !is_known_partition(&entry.name) {
+            return Err(coded_error(
+                "rescue.restore_transaction_invalid",
+                format!("unknown partition in restore transaction: {}", entry.name),
+            ));
+        }
+        let expected_label = entry.name.clone();
+        let other_label = format!("{}_other", entry.name);
+        if entry.label != expected_label && entry.label != other_label {
+            return Err(coded_error(
+                "rescue.restore_transaction_invalid",
+                format!("invalid restore transaction label: {}", entry.label),
+            ));
+        }
+        if !labels.insert(entry.label.clone()) {
+            return Err(coded_error(
+                "rescue.restore_transaction_invalid",
+                format!("duplicate restore transaction entry: {}", entry.label),
+            ));
+        }
+
+        let expected_image = format!("{RESCUE_DIR}{}.img", entry.label);
+        if entry.image_path != expected_image {
+            return Err(coded_error(
+                "rescue.restore_transaction_invalid",
+                format!(
+                    "restore transaction image path is outside rescue storage: {}",
+                    entry.image_path
+                ),
+            ));
+        }
+        if entry.expected_size == 0 || !is_sha256_digest(&entry.expected_sha256) {
+            return Err(coded_error(
+                "rescue.restore_transaction_invalid",
+                format!("invalid expected image metadata for {}", entry.label),
+            ));
+        }
+        if !matches!(
+            entry.status.as_str(),
+            "pending" | "writing" | "failed" | "verified"
+        ) {
+            return Err(coded_error(
+                "rescue.restore_transaction_invalid",
+                format!("invalid restore transaction status for {}", entry.label),
+            ));
+        }
+
+        let device = sanitize_partition_path(&entry.device_path).ok_or_else(|| {
+            coded_error(
+                "rescue.restore_transaction_invalid",
+                format!("unsafe restore target path: {}", entry.device_path),
+            )
+        })?;
+        if device != entry.device_path {
+            return Err(coded_error(
+                "rescue.restore_transaction_invalid",
+                format!(
+                    "restore target path is not normalized: {}",
+                    entry.device_path
+                ),
+            ));
         }
     }
-    let Some(plan) = selected_plan else {
-        if let Some(err) = last_error {
-            return Err(err).context("no usable rescue restore plan");
+    Ok(())
+}
+
+fn validate_restore_transaction_for_resume(transaction: &RestoreTransaction) -> Result<()> {
+    validate_restore_transaction_shape(transaction)?;
+
+    for entry in &transaction.entries {
+        validate_restore_target(entry)?;
+
+        let image_size = fs::metadata(&entry.image_path)
+            .with_context(|| format!("failed to read {} backup metadata", entry.label))?
+            .len();
+        if image_size != entry.expected_size {
+            return Err(coded_error(
+                "rescue.backup_size_changed",
+                format!("{} backup size changed while resuming", entry.label),
+            ));
         }
-        bail!("no usable rescue restore plan");
+        if cached_sha256(&entry.image_path, true) != entry.expected_sha256 {
+            return Err(coded_error(
+                "rescue.backup_changed",
+                format!("{} backup SHA256 changed while resuming", entry.label),
+            ));
+        }
+        let device_size = partition_size(&entry.device_path);
+        if device_size > 0 && device_size != entry.expected_size {
+            return Err(coded_error(
+                "rescue.partition_size_mismatch",
+                format!(
+                    "{} restore target size changed: image={}, partition={}",
+                    entry.label, entry.expected_size, device_size
+                ),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_restore_target(entry: &RestoreTransactionEntry) -> Result<()> {
+    if !restore_target_matches_entry(entry) {
+        return Err(coded_error(
+            "rescue.restore_transaction_invalid",
+            format!(
+                "restore target does not match {} partition semantics: {}",
+                entry.name, entry.device_path
+            ),
+        ));
+    }
+
+    let device = sanitize_partition_path(&entry.device_path).ok_or_else(|| {
+        coded_error(
+            "rescue.restore_transaction_invalid",
+            format!("unsafe restore target path: {}", entry.device_path),
+        )
+    })?;
+    validate_partition_device_path(&entry.name, Path::new(&device))
+        .map_err(|error| coded_error("rescue.restore_transaction_invalid", error.to_string()))?;
+    Ok(())
+}
+
+fn is_sha256_digest(value: &str) -> bool {
+    value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+fn restore_backups(reason: &str, automatic: bool) -> Result<()> {
+    ensure_restore_validation_can_start()?;
+    let config = read_config()?;
+    let existing = read_restore_transaction_for_restore()?;
+    let mut transaction = if let Some(existing) =
+        existing.filter(|transaction| !matches!(transaction.phase.as_str(), "completed" | "idle"))
+    {
+        // Resume the persisted transaction before consulting the manifest. The
+        // transaction already contains the exact verified backup and target
+        // paths needed to finish a partial write.
+        validate_restore_transaction_for_resume(&existing)?;
+        if let Some(slot) = existing.activate_slot.as_deref() {
+            validate_active_slot_switch(slot)?;
+        }
+        append_log(format!(
+            "resuming restore transaction {} in phase {}",
+            existing.id, existing.phase
+        ));
+        existing
+    } else {
+        let plans = restore_plans(&config)?;
+        let mut selected_plan = None;
+        let mut last_error = None;
+        for plan in plans {
+            match validate_restore_backups(&plan.specs, &config, automatic, true, false) {
+                Ok(()) => {
+                    selected_plan = Some(plan);
+                    break;
+                }
+                Err(err) => {
+                    append_log(format!("skip restore plan '{}': {err:#}", plan.description));
+                    last_error = Some(err);
+                }
+            }
+        }
+        let Some(plan) = selected_plan else {
+            if let Some(err) = last_error {
+                return Err(err).context("no usable rescue restore plan");
+            }
+            bail!("no usable rescue restore plan");
+        };
+
+        if let Some(slot) = plan.activate_slot.as_deref() {
+            validate_active_slot_switch(slot)?;
+        }
+        prepare_restore_transaction(reason, automatic, &plan, &config)?
     };
 
-    if let Some(slot) = plan.activate_slot.as_deref() {
-        validate_active_slot_switch(slot)?;
-    }
-
     append_log(format!("restore started: {reason}"));
-    append_log(format!("restore plan: {}", plan.description));
+    append_log(format!("restore plan: {}", transaction.description));
     append_log("restore mode: keep /data untouched; only configured boot images are restored");
-    let mut transaction = prepare_restore_transaction(reason, automatic, &plan, &config)?;
     write_restore_transaction(&transaction)?;
     if let Err(error) = execute_restore_transaction(&mut transaction) {
         "failed".clone_into(&mut transaction.phase);
@@ -1154,14 +1964,22 @@ fn restore_backups(reason: &str, automatic: bool) -> Result<()> {
             ),
         ));
     }
+    // Keep the transaction resumable until the validation marker and terminal
+    // phase are both durable. If either write fails, the next boot will retry
+    // from this transaction instead of assuming the restore was complete.
+    write_restore_pending_boot(&transaction)?;
+    "completed".clone_into(&mut transaction.phase);
+    transaction.updated_at = Local::now().to_rfc3339();
+    write_restore_transaction(&transaction)?;
+
     mark_skip_modules_once();
     mark_legacy_tmp_module_disable();
     disable_all_modules_for_rescue();
     mark_legacy_fix_done_lock();
     cleanup_legacy_rescue_flags();
-    fs::write(RESTORE_LOCK_PATH, b"1").context("failed to write restore lock")?;
-    fs::write(BOOT_COUNT_PATH, b"0").context("failed to reset boot counter")?;
-    let _ = fs::remove_file(PENDING_BOOT_PATH);
+    remove_file_if_exists(Path::new(BOOT_OK_PATH))?;
+    write_boot_count(0)?;
+    remove_file_if_exists(Path::new(PENDING_BOOT_PATH))?;
     append_log("restore finished; rebooting");
     let _ = Command::new("sync").status();
     request_reboot().context("restore completed but reboot request failed")?;
@@ -1216,7 +2034,7 @@ fn prepare_restore_transaction(
         ));
     }
 
-    if let Some(existing) = read_restore_transaction()?
+    if let Some(existing) = read_restore_transaction_for_restore()?
         && let Some(resumable) =
             select_resumable_restore_transaction(existing, &entries, plan.activate_slot.as_deref())?
     {
@@ -1284,12 +2102,20 @@ fn execute_restore_transaction(transaction: &mut RestoreTransaction) -> Result<(
     if let Some(slot) = transaction.activate_slot.as_deref() {
         set_active_slot(slot)?;
     }
-    "completed".clone_into(&mut transaction.phase);
+    // The partition writes and optional slot switch are complete, but the
+    // restored image has not yet survived a full Android boot. Keep this
+    // phase non-terminal so a process or device failure before the validation
+    // marker is committed can be resumed automatically.
+    "awaiting_boot_validation".clone_into(&mut transaction.phase);
     transaction.updated_at = Local::now().to_rfc3339();
     write_restore_transaction(transaction)
 }
 
 fn restore_transaction_entry(entry: &RestoreTransactionEntry) -> Result<()> {
+    // Re-check immediately before opening the block device. The persisted
+    // transaction may have crossed a process restart, and a by-name symlink
+    // can change after the initial preflight.
+    validate_restore_target(entry)?;
     let metadata = fs::metadata(&entry.image_path)
         .with_context(|| format!("failed to read {} backup metadata", entry.label))?;
     if metadata.len() != entry.expected_size {
@@ -1327,13 +2153,81 @@ fn restore_transactions_match(
     activate_slot: Option<&str>,
 ) -> bool {
     existing.activate_slot.as_deref() == activate_slot
-        && existing.entries.len() == entries.len()
+        && restore_transaction_entries_match(existing, entries)
+        && existing
+            .entries
+            .iter()
+            .zip(entries)
+            .all(|(left, right)| left.device_path == right.device_path)
+}
+
+fn restore_transaction_entries_match(
+    existing: &RestoreTransaction,
+    entries: &[RestoreTransactionEntry],
+) -> bool {
+    existing.entries.len() == entries.len()
         && existing.entries.iter().zip(entries).all(|(left, right)| {
-            left.label == right.label
+            left.name == right.name
+                && left.label == right.label
                 && left.image_path == right.image_path
-                && left.device_path == right.device_path
                 && left.expected_sha256 == right.expected_sha256
                 && left.expected_size == right.expected_size
+        })
+}
+
+fn partition_target_key(path: &str) -> Option<String> {
+    let file_name = Path::new(path).file_name()?.to_str()?;
+    let key = file_name
+        .strip_suffix("_a")
+        .or_else(|| file_name.strip_suffix("_b"))
+        .unwrap_or(file_name);
+    (!key.is_empty()).then(|| key.to_owned())
+}
+
+fn restore_target_matches_entry(entry: &RestoreTransactionEntry) -> bool {
+    let configured_custom_path = read_config()
+        .ok()
+        .and_then(|config| config.custom_partitions.get(&entry.name).cloned());
+    if let Some(custom_path) = configured_custom_path {
+        let Some(entry_path) = Path::new(&entry.device_path).canonicalize().ok() else {
+            return false;
+        };
+        let Some(config_path) = Path::new(&custom_path).canonicalize().ok() else {
+            return false;
+        };
+        return entry_path == config_path;
+    }
+
+    let path = Path::new(&entry.device_path);
+    let has_by_name_component = path
+        .components()
+        .any(|component| component.as_os_str() == "by-name");
+    let direct_block_child = path.parent() == Some(Path::new("/dev/block"));
+    if has_by_name_component {
+        return partition_target_key(&entry.device_path).as_deref() == Some(entry.name.as_str());
+    }
+    if direct_block_child
+        && partition_target_key(&entry.device_path).as_deref() == Some(entry.name.as_str())
+    {
+        return true;
+    }
+
+    // Raw platform-specific block paths do not contain the partition label in
+    // their basename. Without an explicit custom mapping they are ambiguous
+    // and must not be used for a resumed write.
+    false
+}
+
+fn restore_transaction_targets_match(
+    existing: &RestoreTransaction,
+    entries: &[RestoreTransactionEntry],
+) -> bool {
+    existing.entries.len() == entries.len()
+        && existing.entries.iter().zip(entries).all(|(left, right)| {
+            left.device_path.starts_with("/dev/block/")
+                && right.device_path.starts_with("/dev/block/")
+                && partition_target_key(&left.device_path)
+                    == partition_target_key(&right.device_path)
         })
 }
 
@@ -1348,6 +2242,16 @@ fn select_resumable_restore_transaction(
     if restore_transactions_match(&existing, entries, activate_slot) {
         return Ok(Some(existing));
     }
+    // A/B devices can switch the active slot between two rescue checks. The
+    // recalculated plan then contains the same partition targets with a
+    // different *_a/*_b path and/or activation state. Reuse the persisted
+    // transaction in that case; its original device paths are retained so a
+    // resumed write cannot silently move to a different partition.
+    if restore_transaction_entries_match(&existing, entries)
+        && restore_transaction_targets_match(&existing, entries)
+    {
+        return Ok(Some(existing));
+    }
     Err(coded_error(
         "rescue.restore_transaction_conflict",
         format!(
@@ -1359,7 +2263,7 @@ fn select_resumable_restore_transaction(
 
 fn restore_transaction_json(transaction: &RestoreTransaction) -> Value {
     json!({
-        "schemaVersion": 1,
+        "schemaVersion": 2,
         "id": transaction.id,
         "reason": transaction.reason,
         "automatic": transaction.automatic,
@@ -1410,6 +2314,14 @@ fn read_restore_transaction_from(path: &Path) -> Result<Option<RestoreTransactio
 fn parse_restore_transaction(content: &str) -> Result<RestoreTransaction> {
     let value: Value =
         serde_json::from_str(content).context("invalid rescue restore transaction JSON")?;
+    if let Some(version) = value.get("schemaVersion") {
+        let version = version
+            .as_u64()
+            .context("restore transaction schemaVersion is not an integer")?;
+        if !matches!(version, 1 | 2) {
+            bail!("unsupported rescue restore transaction schemaVersion: {version}");
+        }
+    }
     let required_string = |key: &str| -> Result<String> {
         value
             .get(key)
@@ -1736,8 +2648,8 @@ fn mark_skip_modules_once() {
         return;
     }
 
-    let primary = fs::write(SKIP_MODULES_ONCE_PATH, b"1");
-    let cache_compat = fs::write(CACHE_SKIP_MODULES_ONCE_PATH, b"1");
+    let primary = atomic_write(Path::new(SKIP_MODULES_ONCE_PATH), b"1");
+    let cache_compat = atomic_write(Path::new(CACHE_SKIP_MODULES_ONCE_PATH), b"1");
     if primary.is_ok() || cache_compat.is_ok() {
         append_log("temporary module skip will be applied on next boot");
     } else {
@@ -1756,27 +2668,23 @@ fn skip_modules_once_exists() -> bool {
     Path::new(SKIP_MODULES_ONCE_PATH).exists() || Path::new(CACHE_SKIP_MODULES_ONCE_PATH).exists()
 }
 
-fn clear_runtime_markers() {
+fn clear_runtime_markers() -> Result<()> {
     for path in [
         PENDING_BOOT_PATH,
+        RESTORE_PENDING_BOOT_PATH,
         RESTORE_LOCK_PATH,
         SKIP_MODULES_ONCE_PATH,
         CACHE_SKIP_MODULES_ONCE_PATH,
         SKIP_MODULES_THIS_BOOT_PATH,
         LEGACY_TMP_MODULE_DISABLE_PATH,
     ] {
-        let _ = fs::remove_file(path);
+        remove_file_if_exists(Path::new(path))?;
     }
-}
-
-fn clear_restore_markers() {
-    for path in [PENDING_BOOT_PATH, RESTORE_LOCK_PATH] {
-        let _ = fs::remove_file(path);
-    }
+    Ok(())
 }
 
 fn mark_legacy_tmp_module_disable() {
-    if let Err(err) = fs::write(LEGACY_TMP_MODULE_DISABLE_PATH, b"1") {
+    if let Err(err) = atomic_write(Path::new(LEGACY_TMP_MODULE_DISABLE_PATH), b"1") {
         append_log(format!(
             "failed to mark legacy temporary module disable: {err:#}"
         ));
@@ -1793,7 +2701,8 @@ fn rescue_modules_for_failed_boot(reason: impl AsRef<str>) {
 
 fn disable_all_modules_for_rescue() {
     let active_modules = active_module_ids();
-    if let Err(error) = write_rescue_disabled_module_ids(&active_modules) {
+    let disabled_modules = merge_module_ids(rescue_disabled_module_ids(), &active_modules);
+    if let Err(error) = write_rescue_disabled_module_ids(&disabled_modules) {
         append_log(format!(
             "failed to record modules disabled by rescue: {error:#}"
         ));
@@ -1805,6 +2714,13 @@ fn disable_all_modules_for_rescue() {
         )),
         Err(err) => append_log(format!("failed to disable all modules for rescue: {err:#}")),
     }
+}
+
+fn merge_module_ids(mut saved: Vec<String>, active: &[String]) -> Vec<String> {
+    saved.extend(active.iter().cloned());
+    saved.sort();
+    saved.dedup();
+    saved
 }
 
 fn active_module_ids() -> Vec<String> {
@@ -1840,6 +2756,7 @@ fn rescue_disabled_module_ids() -> Vec<String> {
         .unwrap_or_default()
         .iter()
         .filter_map(Value::as_str)
+        .filter(|id| module::validate_module_id(id).is_ok())
         .map(ToOwned::to_owned)
         .collect()
 }
@@ -1877,7 +2794,7 @@ pub fn enable_rescue_module(id: &str) -> Result<()> {
 }
 
 fn mark_legacy_fix_done_lock() {
-    if let Err(err) = fs::write(LEGACY_FIX_DONE_LOCK_PATH, b"1") {
+    if let Err(err) = atomic_write(Path::new(LEGACY_FIX_DONE_LOCK_PATH), b"1") {
         append_log(format!("failed to mark legacy rescue lock: {err:#}"));
     }
 }
@@ -1891,27 +2808,7 @@ fn cleanup_legacy_rescue_flags() {
 fn find_partition(spec: &PartitionSpec) -> Result<Option<String>> {
     if let Some(path) = spec.custom_path.as_deref() {
         if Path::new(path).exists() {
-            let resolved = Path::new(path)
-                .canonicalize()
-                .with_context(|| format!("failed to resolve custom partition path {path}"))?;
-            if !resolved.starts_with("/dev/block") {
-                bail!(
-                    "custom partition path for {} resolves outside /dev/block: {}",
-                    spec.name,
-                    resolved.display()
-                );
-            }
-            #[cfg(target_os = "android")]
-            {
-                use std::os::unix::fs::FileTypeExt;
-                if !fs::metadata(&resolved)?.file_type().is_block_device() {
-                    bail!(
-                        "custom partition path for {} is not a block device: {}",
-                        spec.name,
-                        resolved.display()
-                    );
-                }
-            }
+            let resolved = validate_partition_device_path(&spec.name, Path::new(path))?;
             return Ok(Some(resolved.display().to_string()));
         }
         bail!(
@@ -1919,18 +2816,48 @@ fn find_partition(spec: &PartitionSpec) -> Result<Option<String>> {
             spec.name
         );
     }
-    Ok(
-        boot_patch::find_partition_path(&spec.name, spec.ota)
-            .map(|path| path.display().to_string()),
-    )
+    let Some(path) = boot_patch::find_partition_path(&spec.name, spec.ota) else {
+        return Ok(None);
+    };
+    // Automatic candidates are also untrusted input: a vendor can expose a
+    // stale regular file or a symlink outside the block-device tree. Validate
+    // the resolved target before any backup or restore operation uses it.
+    validate_partition_device_path(&spec.name, &path)?;
+    Ok(Some(path.display().to_string()))
+}
+
+fn validate_partition_device_path(name: &str, path: &Path) -> Result<PathBuf> {
+    let resolved = path
+        .canonicalize()
+        .with_context(|| format!("failed to resolve {name} partition path {}", path.display()))?;
+    if !resolved.starts_with("/dev/block") {
+        bail!(
+            "{} partition path resolves outside /dev/block: {}",
+            name,
+            resolved.display()
+        );
+    }
+    #[cfg(target_os = "android")]
+    {
+        use std::os::unix::fs::FileTypeExt;
+        if !fs::metadata(&resolved)?.file_type().is_block_device() {
+            bail!(
+                "{} partition path is not a block device: {}",
+                name,
+                resolved.display()
+            );
+        }
+    }
+    Ok(resolved)
 }
 
 fn image_status(spec: &PartitionSpec, manifest: &Value, deep: bool) -> serde_json::Value {
     let device = find_partition(spec).ok().flatten().unwrap_or_default();
     let size = fs::metadata(&spec.image_path).map_or(0, |metadata| metadata.len());
+    let exists = Path::new(&spec.image_path).is_file() && size > 0;
     let partition_size = partition_size(&device);
     let manifest_sha256 = manifest_sha256_from(manifest, &spec.label).unwrap_or_default();
-    let actual_sha256 = if deep && size > 0 {
+    let actual_sha256 = if deep && exists {
         cached_sha256(&spec.image_path, false)
     } else {
         String::new()
@@ -1939,6 +2866,35 @@ fn image_status(spec: &PartitionSpec, manifest: &Value, deep: bool) -> serde_jso
         manifest_sha256.clone()
     } else {
         actual_sha256.clone()
+    };
+    let size_ok = if deep {
+        exists && (partition_size == 0 || size == partition_size)
+    } else {
+        partition_size == 0 || size == 0 || size == partition_size
+    };
+    let sha256_ok = if deep {
+        deep_image_verification_ok(
+            exists,
+            size,
+            partition_size,
+            &manifest_sha256,
+            &actual_sha256,
+        )
+    } else {
+        // A shallow status read must not claim that a digest was freshly
+        // verified. The UI uses the explicit verification state for that.
+        true
+    };
+    let verification_state = if !exists {
+        "missing"
+    } else if !size_ok || (deep && !sha256_ok) {
+        "failed"
+    } else if deep {
+        "verified"
+    } else if is_sha256_digest(&manifest_sha256) {
+        "cached"
+    } else {
+        "unknown"
     };
     json!({
         "name": spec.name,
@@ -1950,20 +2906,35 @@ fn image_status(spec: &PartitionSpec, manifest: &Value, deep: bool) -> serde_jso
         "otherSlot": spec.ota,
         "restore": spec.restore,
         "dangerous": is_dangerous_partition(&spec.name),
-        "exists": size > 0,
+        "exists": exists,
         "size": size,
         "partitionSize": partition_size,
         "sha256": sha256,
-        "sha256Ok": !deep || manifest_sha256.is_empty() || manifest_sha256 == actual_sha256,
-        "verificationState": if deep { "verified" } else if manifest_sha256.is_empty() { "unknown" } else { "cached" },
-        "sizeOk": partition_size == 0 || size == 0 || partition_size == size,
+        "sha256Ok": sha256_ok,
+        "verificationState": verification_state,
+        "sizeOk": size_ok,
     })
+}
+
+fn deep_image_verification_ok(
+    exists: bool,
+    size: u64,
+    partition_size: u64,
+    manifest_sha256: &str,
+    actual_sha256: &str,
+) -> bool {
+    exists
+        && size > 0
+        && (partition_size == 0 || size == partition_size)
+        && is_sha256_digest(manifest_sha256)
+        && is_sha256_digest(actual_sha256)
+        && manifest_sha256.eq_ignore_ascii_case(actual_sha256)
 }
 
 fn write_manifest(specs: &[PartitionSpec]) -> Result<()> {
     let images = specs
         .iter()
-        .map(|spec| {
+        .map(|spec| -> Result<Value> {
             let device = find_partition(spec).ok().flatten().unwrap_or_default();
             let size = fs::metadata(&spec.image_path).map_or(0, |metadata| metadata.len());
             let partition_size = partition_size(&device);
@@ -1972,7 +2943,23 @@ fn write_manifest(specs: &[PartitionSpec]) -> Result<()> {
             } else {
                 String::new()
             };
-            json!({
+            if size > 0 && sha256.is_empty() {
+                return Err(coded_error(
+                    "rescue.checksum_unavailable",
+                    format!("failed to calculate {} backup SHA256", spec.label),
+                ));
+            }
+            let exists = size > 0;
+            let size_ok = partition_size == 0 || !exists || size == partition_size;
+            let sha256_ok = !exists || is_sha256_digest(&sha256);
+            let verification_state = if !exists {
+                "missing"
+            } else if !size_ok || !sha256_ok {
+                "failed"
+            } else {
+                "cached"
+            };
+            Ok(json!({
                 "name": spec.name,
                 "label": spec.label,
                 "partition": device,
@@ -1982,15 +2969,16 @@ fn write_manifest(specs: &[PartitionSpec]) -> Result<()> {
                 "otherSlot": spec.ota,
                 "restore": spec.restore,
                 "dangerous": is_dangerous_partition(&spec.name),
-                "exists": size > 0,
+                "exists": exists,
                 "size": size,
                 "partitionSize": partition_size,
                 "sha256": sha256,
-                "sha256Ok": true,
-                "sizeOk": partition_size == 0 || size == 0 || partition_size == size,
-            })
+                "sha256Ok": sha256_ok,
+                "verificationState": verification_state,
+                "sizeOk": size_ok,
+            }))
         })
-        .collect::<Vec<_>>();
+        .collect::<Result<Vec<_>>>()?;
     let manifest = json!({
         "createdAt": Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
         "slot": current_slot(),
@@ -2072,6 +3060,13 @@ fn manifest_sha256_from(manifest: &Value, name: &str) -> Option<String> {
 }
 
 fn cached_sha256(path: &str, refresh: bool) -> String {
+    if !refresh {
+        let cached = cached_sha256_readonly(path);
+        if !cached.is_empty() {
+            return cached;
+        }
+    }
+
     let Some(signature) = file_signature(Path::new(path)) else {
         return String::new();
     };
@@ -2109,6 +3104,31 @@ fn cached_sha256(path: &str, refresh: bool) -> String {
     digest
 }
 
+// Status queries and the enable gate must not turn into an unbounded read of
+// a boot image just because the cache was deleted or invalidated. A missing
+// entry is deliberately reported as unknown; the explicit `rescue verify`
+// command is the operation that is allowed to recalculate it.
+fn cached_sha256_readonly(path: &str) -> String {
+    let Some(signature) = file_signature(Path::new(path)) else {
+        return String::new();
+    };
+    let Some(entry) = read_json_file(HASH_CACHE_PATH).and_then(|cache| cache.get(path).cloned())
+    else {
+        return String::new();
+    };
+    if entry.get("size").and_then(Value::as_u64) != Some(signature.0)
+        || entry.get("modifiedNanos").and_then(Value::as_u64) != Some(signature.1)
+    {
+        return String::new();
+    }
+    entry
+        .get("sha256")
+        .and_then(Value::as_str)
+        .filter(|digest| is_sha256_digest(digest))
+        .unwrap_or_default()
+        .to_owned()
+}
+
 fn file_signature(path: &Path) -> Option<(u64, u64)> {
     let metadata = fs::metadata(path).ok()?;
     let modified = metadata.modified().ok()?.duration_since(UNIX_EPOCH).ok()?;
@@ -2119,17 +3139,33 @@ fn file_signature(path: &Path) -> Option<(u64, u64)> {
     Some((metadata.len(), modified_nanos))
 }
 
-fn file_signature_json(path: &Path) -> Value {
-    file_signature(path).map_or_else(
-        || json!({}),
-        |(size, modified_nanos)| {
-            json!({
-                "path": path.display().to_string(),
-                "size": size,
-                "modifiedNanos": modified_nanos,
-            })
-        },
-    )
+fn verified_file_json(path: &Path) -> Result<Value> {
+    let path_text = path.display().to_string();
+    let (size, modified_nanos) = file_signature(path).ok_or_else(|| {
+        coded_error(
+            "rescue.backup_invalid",
+            format!("failed to read backup metadata for {path_text}"),
+        )
+    })?;
+    if size == 0 {
+        return Err(coded_error(
+            "rescue.backup_invalid",
+            format!("backup file is empty: {path_text}"),
+        ));
+    }
+    let digest = cached_sha256(&path_text, true);
+    if digest.is_empty() {
+        return Err(coded_error(
+            "rescue.checksum_unavailable",
+            format!("failed to calculate backup SHA256 for {path_text}"),
+        ));
+    }
+    Ok(json!({
+        "path": path_text,
+        "size": size,
+        "modifiedNanos": modified_nanos,
+        "sha256": digest,
+    }))
 }
 
 fn read_json_file(path: &str) -> Option<Value> {
@@ -2141,11 +3177,25 @@ fn write_verification_marker(specs: &[PartitionSpec], manifest: &Value) -> Resul
     let files = specs
         .iter()
         .filter(|spec| Path::new(&spec.image_path).is_file())
-        .map(|spec| file_signature_json(Path::new(&spec.image_path)))
-        .collect::<Vec<_>>();
+        .map(|spec| verified_file_json(Path::new(&spec.image_path)))
+        .collect::<Result<Vec<_>>>()?;
+    if files.is_empty() {
+        return Err(coded_error(
+            "rescue.backup_invalid",
+            "no rescue backup was available for the verification marker",
+        ));
+    }
+    let manifest_sha256 = cached_sha256(MANIFEST_PATH, true);
+    if manifest_sha256.is_empty() {
+        return Err(coded_error(
+            "rescue.manifest_digest_missing",
+            "failed to calculate rescue manifest SHA256",
+        ));
+    }
     let marker = json!({
+        "schemaVersion": 2,
         "verifiedAt": Local::now().to_rfc3339(),
-        "manifestSha256": sha256_of(MANIFEST_PATH),
+        "manifestSha256": manifest_sha256,
         "manifestCreatedAt": manifest.get("createdAt").and_then(Value::as_str).unwrap_or_default(),
         "files": files,
     });
@@ -2153,42 +3203,98 @@ fn write_verification_marker(specs: &[PartitionSpec], manifest: &Value) -> Resul
         .context("failed to persist rescue verification marker")
 }
 
+fn parse_verification_marker_files(marker: &Value) -> Result<BTreeMap<String, (u64, String)>> {
+    let files = marker
+        .get("files")
+        .and_then(Value::as_array)
+        .context("verification marker is missing files")?;
+    if files.is_empty() {
+        bail!("verification marker contains no files");
+    }
+
+    let mut parsed = BTreeMap::new();
+    for (index, entry) in files.iter().enumerate() {
+        let path = entry
+            .get("path")
+            .and_then(Value::as_str)
+            .filter(|path| !path.is_empty())
+            .with_context(|| format!("verification marker file {index} has no path"))?;
+        let size = entry
+            .get("size")
+            .and_then(Value::as_u64)
+            .filter(|size| *size > 0)
+            .with_context(|| format!("verification marker file {index} has an invalid size"))?;
+        let sha256 = entry
+            .get("sha256")
+            .and_then(Value::as_str)
+            .filter(|digest| is_sha256_digest(digest))
+            .with_context(|| format!("verification marker file {index} has an invalid SHA256"))?;
+        if parsed
+            .insert(path.to_owned(), (size, sha256.to_owned()))
+            .is_some()
+        {
+            bail!("verification marker contains duplicate path: {path}");
+        }
+    }
+    Ok(parsed)
+}
+
 fn verification_marker_is_current(specs: &[PartitionSpec], manifest: &Value) -> bool {
     let Some(marker) = read_json_file(VERIFIED_PATH) else {
         return false;
     };
+    if marker.get("schemaVersion").and_then(Value::as_u64) != Some(2) {
+        return false;
+    }
     let manifest_sha256 = marker
         .get("manifestSha256")
         .and_then(Value::as_str)
         .unwrap_or_default();
-    if manifest_sha256.is_empty() || manifest_sha256 != sha256_of(MANIFEST_PATH) {
+    let cached_manifest_sha256 = cached_sha256_readonly(MANIFEST_PATH);
+    if !is_sha256_digest(manifest_sha256)
+        || !manifest_sha256.eq_ignore_ascii_case(&cached_manifest_sha256)
+    {
         return false;
     }
-    let Some(files) = marker.get("files").and_then(Value::as_array) else {
+    let Ok(expected) = parse_verification_marker_files(&marker) else {
         return false;
     };
-    let expected = files
-        .iter()
-        .filter_map(|entry| {
-            Some((
-                entry.get("path")?.as_str()?.to_owned(),
-                (
-                    entry.get("size")?.as_u64()?,
-                    entry.get("modifiedNanos")?.as_u64()?,
-                ),
-            ))
-        })
-        .collect::<BTreeMap<_, _>>();
-    specs
+    let current_files = specs
         .iter()
         .filter(|spec| Path::new(&spec.image_path).is_file())
-        .all(|spec| {
-            file_signature(Path::new(&spec.image_path))
-                .is_some_and(|signature| expected.get(&spec.image_path) == Some(&signature))
-        })
-        && !expected.is_empty()
-        && manifest.get("createdAt").and_then(Value::as_str)
-            == marker.get("manifestCreatedAt").and_then(Value::as_str)
+        .collect::<Vec<_>>();
+    let current_paths = current_files
+        .iter()
+        .map(|spec| spec.image_path.clone())
+        .collect::<BTreeSet<_>>();
+    let expected_paths = expected.keys().cloned().collect::<BTreeSet<_>>();
+    if current_files.len() != current_paths.len() || current_paths != expected_paths {
+        return false;
+    }
+
+    let manifest_created_at = manifest
+        .get("createdAt")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty());
+    let marker_created_at = marker
+        .get("manifestCreatedAt")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty());
+    if manifest_created_at != marker_created_at {
+        return false;
+    }
+
+    current_files.iter().all(|spec| {
+        let Some((size, _)) = file_signature(Path::new(&spec.image_path)) else {
+            return false;
+        };
+        let Some((expected_size, expected_sha256)) = expected.get(&spec.image_path) else {
+            return false;
+        };
+        size > 0
+            && size == *expected_size
+            && cached_sha256_readonly(&spec.image_path).eq_ignore_ascii_case(expected_sha256)
+    })
 }
 
 fn write_environment_check(config: &RescueConfig) -> Result<()> {
@@ -2526,13 +3632,34 @@ fn current_slot() -> String {
 }
 
 fn current_boot_id() -> Result<String> {
-    let value = fs::read_to_string("/proc/sys/kernel/random/boot_id")
-        .context("failed to read current boot ID")?;
-    let value = value.trim().to_owned();
-    if value.is_empty() {
-        bail!("current boot ID is empty");
+    if let Ok(value) = fs::read_to_string("/proc/sys/kernel/random/boot_id") {
+        let value = value.trim().to_owned();
+        if !value.is_empty() {
+            return Ok(value);
+        }
     }
-    Ok(value)
+
+    // Some vendor kernels restrict boot_id even for a root daemon. Linux's
+    // boot-time field is a stable per-boot token and keeps restore validation
+    // bounded instead of leaving a restore marker pending forever.
+    if let Ok(stat) = fs::read_to_string("/proc/stat")
+        && let Some(token) = boot_time_token(&stat)
+    {
+        return Ok(token);
+    }
+
+    bail!("failed to read current boot identity")
+}
+
+fn boot_time_token(proc_stat: &str) -> Option<String> {
+    proc_stat.lines().find_map(|line| {
+        let mut fields = line.split_whitespace();
+        if fields.next() != Some("btime") {
+            return None;
+        }
+        let value = fields.next()?.parse::<u64>().ok()?;
+        (value > 0).then(|| format!("proc-stat-btime:{value}"))
+    })
 }
 
 fn boot_mode() -> String {
@@ -2595,16 +3722,17 @@ fn read_auto_restore_attempts() -> u32 {
         .unwrap_or(0)
 }
 
-fn write_auto_restore_attempts(value: u32) {
-    if let Err(err) = fs::write(AUTO_RESTORE_ATTEMPTS_PATH, value.to_string()) {
-        append_log(format!("failed to write auto restore attempts: {err:#}"));
-    }
+fn write_auto_restore_attempts(value: u32) -> Result<()> {
+    atomic_write(
+        Path::new(AUTO_RESTORE_ATTEMPTS_PATH),
+        value.to_string().as_bytes(),
+    )
+    .context("failed to write auto restore attempts")
 }
 
-fn write_boot_count(value: u32) {
-    if let Err(err) = fs::write(BOOT_COUNT_PATH, value.to_string()) {
-        append_log(format!("failed to write boot counter: {err:#}"));
-    }
+fn write_boot_count(value: u32) -> Result<()> {
+    atomic_write(Path::new(BOOT_COUNT_PATH), value.to_string().as_bytes())
+        .context("failed to write boot counter")
 }
 
 fn has_boot_failure_hint() -> bool {
@@ -2612,14 +3740,45 @@ fn has_boot_failure_hint() -> bool {
 }
 
 fn has_legacy_failure_hint() -> bool {
-    let mut found = false;
-    for path in [LEGACY_LOOP_FLAG_PATH, LEGACY_PANIC_FLAG_PATH] {
-        if Path::new(path).exists() {
-            append_log(format!("legacy rescue failure hint found: {path}"));
-            found = true;
-        }
+    let loop_content = fs::read_to_string(LEGACY_LOOP_FLAG_PATH).ok();
+    let panic_content = fs::read_to_string(LEGACY_PANIC_FLAG_PATH).ok();
+    let loop_failure = loop_content
+        .as_deref()
+        .is_some_and(has_legacy_loop_failure_text);
+    let panic_failure = panic_content.as_deref().is_some_and(has_failure_text);
+
+    if loop_failure {
+        append_log(format!(
+            "legacy rescue failure hint found in {LEGACY_LOOP_FLAG_PATH}"
+        ));
+    } else if Path::new(LEGACY_LOOP_FLAG_PATH).exists() {
+        // The old module creates this file during every normal boot. Its
+        // existence alone is not evidence of a failed boot.
+        append_log(format!(
+            "ignored non-actionable legacy loop marker: {LEGACY_LOOP_FLAG_PATH}"
+        ));
     }
-    found
+    if panic_failure {
+        append_log(format!(
+            "legacy rescue failure hint found in {LEGACY_PANIC_FLAG_PATH}"
+        ));
+    }
+    loop_failure || panic_failure
+}
+
+fn has_legacy_loop_failure_text(text: &str) -> bool {
+    let text = text.to_ascii_lowercase();
+    [
+        "boot loop",
+        "bootloop",
+        "reboot loop",
+        "infinite reboot",
+        "kernel panic",
+        "watchdog",
+    ]
+    .iter()
+    .any(|token| text.contains(token))
+        || has_failure_text(&text)
 }
 
 fn has_boot_reason_failure_hint() -> bool {
@@ -2829,15 +3988,39 @@ fn partition_size(path: &str) -> u64 {
         return 0;
     }
 
-    if let Ok(output) = Command::new("blockdev")
-        .arg("--getsize64")
-        .arg(path)
-        .output()
-        && output.status.success()
-        && let Ok(text) = String::from_utf8(output.stdout)
-        && let Ok(size) = text.trim().parse::<u64>()
+    // Android vendor ramdisks do not expose one consistent PATH. Try the
+    // standalone utility and the toolbox fallbacks before treating the size
+    // as unknown.
+    for (program, args) in [
+        ("blockdev", vec!["--getsize64", path]),
+        ("/system/bin/blockdev", vec!["--getsize64", path]),
+        ("/system/bin/toybox", vec!["blockdev", "--getsize64", path]),
+        ("/system/bin/toolbox", vec!["blockdev", "--getsize64", path]),
+    ] {
+        if let Ok(output) = Command::new(program).args(&args).output()
+            && output.status.success()
+            && let Ok(text) = String::from_utf8(output.stdout)
+            && let Ok(size) = text.trim().parse::<u64>()
+            && size > 0
+        {
+            return size;
+        }
+    }
+
+    // `/sys/class/block/*/size` is expressed in 512-byte sectors and remains
+    // available on devices where the user-space blockdev binary is hidden.
+    let resolved = Path::new(path)
+        .canonicalize()
+        .unwrap_or_else(|_| PathBuf::from(path));
+    if let Some(name) = resolved.file_name().and_then(|value| value.to_str())
+        && let Ok(sectors) =
+            fs::read_to_string(Path::new("/sys/class/block").join(name).join("size"))
+                .ok()
+                .and_then(|value| value.trim().parse::<u64>().ok())
+                .ok_or(())
+        && sectors > 0
     {
-        return size;
+        return sectors.saturating_mul(512);
     }
 
     fs::metadata(path).map_or(0, |metadata| metadata.len())
@@ -2896,12 +4079,18 @@ fn tail_file(path: &str, max_lines: usize) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        BootRescueAction, COPY_TOTAL_TIMEOUT_SECONDS, PartitionSpec, RestoreTransaction,
-        RestoreTransactionEntry, backup_path, copy_with_clock, error_code,
-        failure_artifact_from_path, fresh_failure_artifact_path, invalidate_protection_markers_at,
-        is_recovery_mode_value, normalize_partition_name, parse_config, post_fs_data_rescue_action,
+        BootRescueAction, BootRescueSignals, COPY_TOTAL_TIMEOUT_SECONDS, PartitionSpec,
+        RestorePendingBoot, RestorePendingBootState, RestoreTransaction, RestoreTransactionEntry,
+        backup_path, boot_time_token, copy_with_clock, deep_image_verification_ok, error_code,
+        failure_artifact_from_path, fresh_failure_artifact_path, has_legacy_loop_failure_text,
+        invalidate_protection_markers_at, is_recovery_mode_value, marker_armed_boot_id,
+        marker_armed_in_boot, marker_armed_in_current_boot_id, merge_module_ids,
+        normalize_partition_name, parse_config, parse_restore_transaction,
+        parse_verification_marker_files, partition_target_key, post_fs_data_rescue_action,
         preserve_file, read_restore_transaction_from, recovery_boot_rescue_action,
-        restore_preserved_file, restore_transaction_json, restore_transactions_match,
+        restore_marker_blocks_boot_commit, restore_pending_boot_state_from_marker,
+        restore_preserved_file, restore_target_matches_entry, restore_transaction_json,
+        restore_transaction_targets_match, restore_transactions_match,
         select_resumable_restore_transaction, validate_import_source_against_partition,
     };
     use serde_json::{Map, Value, json};
@@ -2971,37 +4160,252 @@ mod tests {
     #[test]
     fn keeps_image_rollback_scoped_to_pending_flashes() {
         assert_eq!(
-            post_fs_data_rescue_action(true, false, 2, false),
+            post_fs_data_rescue_action(BootRescueSignals {
+                pending_boot: true,
+                boot_count: 2,
+                ..Default::default()
+            }),
             BootRescueAction::RestoreBackups,
         );
         assert_eq!(
-            post_fs_data_rescue_action(false, false, 2, false),
+            post_fs_data_rescue_action(BootRescueSignals {
+                boot_count: 2,
+                ..Default::default()
+            }),
             BootRescueAction::DisableModules,
         );
         assert_eq!(
-            post_fs_data_rescue_action(false, true, 1, false),
+            post_fs_data_rescue_action(BootRescueSignals {
+                previous_boot_ok: true,
+                boot_count: 1,
+                ..Default::default()
+            }),
             BootRescueAction::None,
+        );
+        assert_eq!(
+            post_fs_data_rescue_action(BootRescueSignals {
+                restore_transaction_pending: true,
+                previous_boot_ok: true,
+                boot_count: 1,
+                ..Default::default()
+            }),
+            BootRescueAction::RestoreBackups,
         );
     }
 
     #[test]
     fn recovery_requires_failure_evidence_or_repeated_pending_boots() {
         assert_eq!(
-            recovery_boot_rescue_action(true, false, 1),
+            recovery_boot_rescue_action(BootRescueSignals {
+                pending_boot: true,
+                boot_count: 1,
+                ..Default::default()
+            }),
             BootRescueAction::None,
         );
         assert_eq!(
-            recovery_boot_rescue_action(true, true, 1),
+            recovery_boot_rescue_action(BootRescueSignals {
+                pending_boot: true,
+                failure_hint: true,
+                boot_count: 1,
+                ..Default::default()
+            }),
             BootRescueAction::RestoreBackups,
         );
         assert_eq!(
-            recovery_boot_rescue_action(true, false, 2),
+            recovery_boot_rescue_action(BootRescueSignals {
+                pending_boot: true,
+                boot_count: 2,
+                ..Default::default()
+            }),
             BootRescueAction::RestoreBackups,
         );
         assert_eq!(
-            recovery_boot_rescue_action(false, true, 1),
+            recovery_boot_rescue_action(BootRescueSignals {
+                failure_hint: true,
+                boot_count: 1,
+                ..Default::default()
+            }),
             BootRescueAction::DisableModules,
         );
+        assert_eq!(
+            recovery_boot_rescue_action(BootRescueSignals {
+                restore_transaction_pending: true,
+                boot_count: 1,
+                ..Default::default()
+            }),
+            BootRescueAction::RestoreBackups,
+        );
+    }
+
+    #[test]
+    fn boot_completed_does_not_consume_current_boot_image_marker() {
+        let pending = json!({"bootId": "boot-current"});
+        assert!(marker_armed_in_boot(&pending, Some("boot-current"), false));
+        assert!(!marker_armed_in_boot(
+            &json!({"bootId": "boot-previous"}),
+            Some("boot-current"),
+            false
+        ));
+
+        let restore = json!({
+            "bootId": "boot-current",
+            "validationBootId": ""
+        });
+        assert!(marker_armed_in_boot(&restore, Some("boot-current"), true));
+        assert!(!marker_armed_in_boot(
+            &json!({
+                "bootId": "boot-current",
+                "validationBootId": "boot-current"
+            }),
+            Some("boot-current"),
+            true
+        ));
+    }
+
+    #[test]
+    fn armed_boot_id_migrates_and_conflicts_fail_closed() {
+        assert_eq!(
+            marker_armed_boot_id(&json!({"bootId": "legacy"})),
+            Some("legacy".to_owned())
+        );
+        assert_eq!(
+            marker_armed_boot_id(&json!({
+                "armedBootId": "current",
+                "bootId": "current"
+            })),
+            Some("current".to_owned())
+        );
+        assert!(
+            marker_armed_boot_id(&json!({
+                "armedBootId": "current",
+                "bootId": "old"
+            }))
+            .is_none()
+        );
+        assert!(marker_armed_in_boot(
+            &json!({
+                "armedBootId": "current",
+                "bootId": "old"
+            }),
+            Some("current"),
+            false
+        ));
+    }
+
+    #[test]
+    fn duplicate_post_fs_data_marker_is_only_current_when_ids_match() {
+        let marker = json!({
+            "armedBootId": "boot-current",
+            "bootId": "boot-current",
+        });
+        assert!(marker_armed_in_current_boot_id(
+            &marker,
+            Some("boot-current")
+        ));
+        assert!(!marker_armed_in_current_boot_id(&marker, Some("boot-next")));
+        assert!(!marker_armed_in_current_boot_id(&marker, None));
+        assert!(!marker_armed_in_current_boot_id(
+            &json!({"armedBootId": ""}),
+            Some("boot-current")
+        ));
+    }
+
+    #[test]
+    fn restore_marker_requires_current_validation_id_to_commit_health() {
+        assert!(!restore_marker_blocks_boot_commit(
+            &json!({
+                "armedBootId": "before",
+                "bootId": "before",
+                "validationBootId": "current"
+            }),
+            Some("current")
+        ));
+        assert!(restore_marker_blocks_boot_commit(
+            &json!({
+                "armedBootId": "before",
+                "bootId": "before",
+                "validationBootId": "old"
+            }),
+            Some("current")
+        ));
+        assert!(restore_marker_blocks_boot_commit(
+            &json!({"validationBootId": "current"}),
+            None
+        ));
+        assert!(restore_marker_blocks_boot_commit(
+            &json!({"validationBootId": "current"}),
+            Some("current")
+        ));
+        assert!(!restore_marker_blocks_boot_commit(
+            &json!({
+                "transactionId": "legacy-restore",
+                "validationBootId": "current"
+            }),
+            Some("current")
+        ));
+        assert!(restore_marker_blocks_boot_commit(
+            &json!({
+                "armedBootId": "current",
+                "bootId": "current",
+                "validationBootId": "current"
+            }),
+            Some("current")
+        ));
+    }
+
+    #[test]
+    fn deep_image_verification_requires_size_and_two_valid_matching_digests() {
+        let digest = "a".repeat(64);
+        assert!(deep_image_verification_ok(
+            true, 4096, 4096, &digest, &digest
+        ));
+        assert!(!deep_image_verification_ok(true, 4096, 4096, "", &digest));
+        assert!(!deep_image_verification_ok(
+            true,
+            4096,
+            4096,
+            &digest,
+            &"b".repeat(64)
+        ));
+        assert!(!deep_image_verification_ok(
+            true, 4096, 2048, &digest, &digest
+        ));
+        assert!(!deep_image_verification_ok(
+            false, 4096, 4096, &digest, &digest
+        ));
+    }
+
+    #[test]
+    fn verification_marker_rejects_missing_invalid_and_duplicate_files() {
+        let digest = "a".repeat(64);
+        let valid = json!({
+            "files": [{
+                "path": "/data/adb/ksu/rescue/boot.img",
+                "size": 4096,
+                "sha256": digest
+            }]
+        });
+        let parsed = parse_verification_marker_files(&valid).unwrap();
+        assert_eq!(parsed.len(), 1);
+
+        let duplicate = json!({
+            "files": [
+                {"path": "/data/adb/ksu/rescue/boot.img", "size": 4096, "sha256": "a".repeat(64)},
+                {"path": "/data/adb/ksu/rescue/boot.img", "size": 4096, "sha256": "a".repeat(64)}
+            ]
+        });
+        assert!(parse_verification_marker_files(&duplicate).is_err());
+
+        let invalid_digest = json!({
+            "files": [{"path": "/data/adb/ksu/rescue/boot.img", "size": 4096, "sha256": "short"}]
+        });
+        assert!(parse_verification_marker_files(&invalid_digest).is_err());
+
+        let zero_size = json!({
+            "files": [{"path": "/data/adb/ksu/rescue/boot.img", "size": 0, "sha256": "a".repeat(64)}]
+        });
+        assert!(parse_verification_marker_files(&zero_size).is_err());
     }
 
     #[test]
@@ -3023,6 +4427,152 @@ mod tests {
                 "ambiguous value must not trigger recovery restore: {mode}"
             );
         }
+    }
+
+    #[test]
+    fn boot_time_token_is_a_stable_fallback_for_missing_boot_id() {
+        assert_eq!(
+            boot_time_token("cpu 1\nbtime 1720000000\nprocesses 42\n"),
+            Some("proc-stat-btime:1720000000".to_owned())
+        );
+        assert_eq!(boot_time_token("btime 0\n"), None);
+        assert_eq!(boot_time_token("btime not-a-number\n"), None);
+        assert_eq!(boot_time_token("cpu 1\n"), None);
+    }
+
+    #[test]
+    fn legacy_loop_marker_requires_failure_content() {
+        assert!(!has_legacy_loop_failure_text(""));
+        assert!(!has_legacy_loop_failure_text("created during normal boot"));
+        assert!(has_legacy_loop_failure_text("boot loop detected"));
+        assert!(has_legacy_loop_failure_text("kernel panic - not syncing"));
+    }
+
+    #[test]
+    fn restore_marker_allows_one_validation_boot_then_detects_failure() {
+        let marker = RestorePendingBoot {
+            transaction_id: "restore-1".to_owned(),
+            armed_boot_id: "boot-before".to_owned(),
+            validation_boot_id: String::new(),
+            armed_at: "now".to_owned(),
+        };
+        assert_eq!(
+            restore_pending_boot_state_from_marker(&marker, "boot-after", 1),
+            RestorePendingBootState::Current,
+        );
+
+        let validating = RestorePendingBoot {
+            validation_boot_id: "boot-after".to_owned(),
+            ..marker.clone()
+        };
+        assert_eq!(
+            restore_pending_boot_state_from_marker(&validating, "boot-after", 1),
+            RestorePendingBootState::Current,
+        );
+        assert_eq!(
+            restore_pending_boot_state_from_marker(&validating, "boot-failed", 2),
+            RestorePendingBootState::Previous,
+        );
+        assert_eq!(
+            restore_pending_boot_state_from_marker(&marker, "boot-failed", 2),
+            RestorePendingBootState::Previous,
+            "counter fallback must detect failure when validation boot ID was not persisted",
+        );
+    }
+
+    #[test]
+    fn restore_transaction_serialization_uses_current_schema() {
+        let transaction = RestoreTransaction {
+            id: "schema-test".to_owned(),
+            reason: "unit test".to_owned(),
+            automatic: false,
+            description: "restore current slot".to_owned(),
+            activate_slot: None,
+            phase: "writing".to_owned(),
+            error_code: String::new(),
+            error_message: String::new(),
+            started_at: "start".to_owned(),
+            updated_at: "update".to_owned(),
+            entries: vec![],
+        };
+        assert_eq!(restore_transaction_json(&transaction)["schemaVersion"], 2);
+        assert!(
+            parse_restore_transaction(&restore_transaction_json(&transaction).to_string()).is_ok()
+        );
+        assert!(
+            parse_restore_transaction(
+                &restore_transaction_json(&transaction)
+                    .as_object()
+                    .map(|object| {
+                        let mut legacy = object.clone();
+                        legacy.insert("schemaVersion".to_owned(), json!(1));
+                        Value::Object(legacy)
+                    })
+                    .unwrap()
+                    .to_string()
+            )
+            .is_ok()
+        );
+        assert!(
+            parse_restore_transaction(
+                &restore_transaction_json(&transaction)
+                    .as_object()
+                    .map(|object| {
+                        let mut future = object.clone();
+                        future.insert("schemaVersion".to_owned(), json!(99));
+                        Value::Object(future)
+                    })
+                    .unwrap()
+                    .to_string()
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn restore_targets_must_match_partition_names() {
+        let entry = |name: &str, path: &str| RestoreTransactionEntry {
+            name: name.to_owned(),
+            label: name.to_owned(),
+            image_path: format!("/data/adb/ksu/rescue/{name}.img"),
+            device_path: path.to_owned(),
+            expected_sha256: "a".repeat(64),
+            expected_size: 1,
+            status: "pending".to_owned(),
+        };
+
+        assert!(restore_target_matches_entry(&entry(
+            "boot",
+            "/dev/block/by-name/boot_a"
+        )));
+        assert!(restore_target_matches_entry(&entry(
+            "init_boot",
+            "/dev/block/platform/soc/by-name/init_boot_b"
+        )));
+        assert!(!restore_target_matches_entry(&entry(
+            "boot",
+            "/dev/block/by-name/vendor_boot_a"
+        )));
+        assert!(!restore_target_matches_entry(&entry(
+            "boot",
+            "/dev/block/by-name/boot_a/extra"
+        )));
+    }
+
+    #[test]
+    fn repeated_rescue_module_failures_keep_previous_module_records() {
+        let merged = merge_module_ids(
+            vec!["old-module".to_owned(), "shared".to_owned()],
+            &["new-module".to_owned(), "shared".to_owned()],
+        );
+        assert_eq!(
+            merged,
+            vec![
+                "new-module".to_owned(),
+                "old-module".to_owned(),
+                "shared".to_owned()
+            ]
+        );
     }
 
     #[test]
@@ -3200,6 +4750,46 @@ mod tests {
         let error = select_resumable_restore_transaction(existing, &entries, None)
             .expect_err("mismatched unfinished transaction must be rejected");
         assert_eq!(error_code(&error), "rescue.restore_transaction_conflict");
+    }
+
+    #[test]
+    fn interrupted_ab_restore_can_resume_after_slot_activation_changes() {
+        let existing = RestoreTransaction {
+            id: "ab-restore".to_owned(),
+            reason: "unit test".to_owned(),
+            automatic: true,
+            description: "restore saved slot".to_owned(),
+            activate_slot: Some("_a".to_owned()),
+            phase: "awaiting_boot_validation".to_owned(),
+            error_code: String::new(),
+            error_message: String::new(),
+            started_at: "start".to_owned(),
+            updated_at: "update".to_owned(),
+            entries: vec![RestoreTransactionEntry {
+                name: "boot".to_owned(),
+                label: "boot".to_owned(),
+                image_path: "/data/adb/ksu/rescue/boot.img".to_owned(),
+                device_path: "/dev/block/by-name/boot_b".to_owned(),
+                expected_sha256: "digest".to_owned(),
+                expected_size: 4096,
+                status: "verified".to_owned(),
+            }],
+        };
+        let recalculated = vec![RestoreTransactionEntry {
+            device_path: "/dev/block/by-name/boot_a".to_owned(),
+            ..existing.entries[0].clone()
+        }];
+
+        assert!(!restore_transactions_match(&existing, &recalculated, None));
+        assert!(restore_transaction_targets_match(&existing, &recalculated));
+        let resumed = select_resumable_restore_transaction(existing, &recalculated, None)
+            .expect("same A/B partition plan should be resumable")
+            .expect("transaction should resume");
+        assert_eq!(resumed.id, "ab-restore");
+        assert_eq!(
+            partition_target_key(&resumed.entries[0].device_path).as_deref(),
+            Some("boot")
+        );
     }
 
     #[test]

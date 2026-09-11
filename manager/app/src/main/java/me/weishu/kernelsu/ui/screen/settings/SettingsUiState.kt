@@ -172,6 +172,12 @@ data class SettingsUiState(
     val kPatchNextVersion: String = "",
     val kPatchNextConflict: String? = null,
 
+    // Effective KPM backend reported by ksud. Keep this separate from the
+    // KPatch-Next installation lifecycle because GKI uses Native KPM.
+    val kpmBackend: String = "none",
+    val isKpmManagementAvailable: Boolean = false,
+    val isKpmCapabilityResolved: Boolean = false,
+
     // ApkeSU Hide
     val isEpkesuHideEnabled: Boolean = false,
 

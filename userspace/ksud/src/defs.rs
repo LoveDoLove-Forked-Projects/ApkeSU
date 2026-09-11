@@ -10,6 +10,7 @@ mod android {
     pub const SULOGD_LOCK_PATH: &str = concatcp!(WORKING_DIR, "sulogd.lock");
     pub const KPM_DIR: &str = concatcp!(WORKING_DIR, "kpm/");
     pub const KPM_BOOT_PENDING_PATH: &str = concatcp!(KPM_DIR, ".boot_pending.json");
+    pub const KPM_OPERATION_LOCK_PATH: &str = concatcp!(KPM_DIR, ".operation.lock");
     pub const KPM_POLICY_PATH: &str = concatcp!(KPM_DIR, ".policy.json");
 
     pub const PROFILE_DIR: &str = concatcp!(WORKING_DIR, "profile/");

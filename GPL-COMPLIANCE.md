@@ -82,3 +82,20 @@ inputs are documented in:
 
 That file is the release-audit entry point for dependencies that are not part
 of KernelSU/ApkeSU source itself.
+
+6. Native GKI KPM attribution and scope
+---------------------------------------
+
+The Native GKI KPM interface is declared as a SukiSU-compatible ApkeSU
+implementation, not as an official SukiSU-Ultra release. The interface
+reference is pinned to SukiSU-Ultra commit
+`9fbe8fe8ca90c62c259c5894bf96d02ac31209b9`; the early-boot KernelPatch/KPIMG
+source snapshot is pinned separately to
+`c5f0785dc7fac22a846eecc6392f34198d8e18b5`. The URLs, license data, and exact
+scope are recorded in `docs/SUKISU_KPM_NOTICE.md` and
+`third_party/kernelpatch/SOURCE.json`.
+
+The ApkeSU bridge is confined to the `CONFIG_KSU=y`, `CONFIG_KPM=y` AArch64
+GKI path. The LKM/KPatch-Next backend is separate. No upstream license is
+replaced by this declaration; each imported or derived file remains governed
+by its SPDX header and the applicable upstream license.

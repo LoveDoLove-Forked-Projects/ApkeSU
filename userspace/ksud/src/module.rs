@@ -458,10 +458,31 @@ fn module_id_from_script_path(path: &Path) -> Option<String> {
         .and_then(|props| props.get("id").cloned())
 }
 
+fn should_skip_kpatch_next() -> bool {
+    !ksucalls::is_lkm_mode() || ksucalls::is_late_load()
+}
+
+fn is_kpatch_next_module(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|id| id == crate::kpatch_next::KPATCH_NEXT_MODULE_ID)
+}
+
 pub fn exec_stage_script(stage: &str, block: bool) -> Result<()> {
     let metamodule_dir = metamodule::get_metamodule_path().and_then(|path| canonicalize(path).ok());
 
     foreach_active_module(|module| {
+        // KPatch-Next is an LKM-only backend. This central guard also covers
+        // modules installed by an older Manager whose service.sh predates the
+        // generated shell guard, so a GKI boot cannot start stale KPatch code.
+        if is_kpatch_next_module(module) && should_skip_kpatch_next() {
+            warn!(
+                "skip KPatch-Next {stage} script outside LKM mode: {}",
+                module.display()
+            );
+            return Ok(());
+        }
+
         if metamodule_dir.as_ref().is_some_and(|meta_dir| {
             canonicalize(module).is_ok_and(|resolved| resolved == *meta_dir)
         }) {
@@ -655,6 +676,10 @@ pub fn regenerate_preinit_rc() -> Result<()> {
                     continue;
                 };
                 let id = id.to_string();
+                if id == crate::kpatch_next::KPATCH_NEXT_MODULE_ID && should_skip_kpatch_next() {
+                    modules.insert(id, None);
+                    continue;
+                }
                 if module_path.join(defs::DISABLE_FILE_NAME).exists()
                     || module_path.join(defs::REMOVE_FILE_NAME).exists()
                 {

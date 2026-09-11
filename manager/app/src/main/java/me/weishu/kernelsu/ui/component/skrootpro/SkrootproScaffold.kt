@@ -55,9 +55,13 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import me.weishu.kernelsu.R
 import me.weishu.kernelsu.ui.component.LocalNightBackgroundEffectActive
+import me.weishu.kernelsu.ui.component.bottombar.NavigationDestinationIcon
+import me.weishu.kernelsu.ui.component.bottombar.stateFor
 import me.weishu.kernelsu.ui.theme.LocalImmersiveBackgroundActive
 import me.weishu.kernelsu.ui.theme.immersiveTopBarColor
 import me.weishu.kernelsu.ui.theme.isInDarkTheme
+import me.weishu.kernelsu.ui.util.CustomNavigationIconState
+import me.weishu.kernelsu.ui.util.LocalCustomNavigationIcons
 
 private data class SkrootproPalette(
     val purple: Color,
@@ -306,6 +310,7 @@ fun SkrootproBottomBar(
     modifier: Modifier = Modifier,
 ) {
     val navBottom = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
+    val customIcons = LocalCustomNavigationIcons.current
     Row(
         modifier = modifier
             .fillMaxWidth()
@@ -321,6 +326,7 @@ fun SkrootproBottomBar(
         destinations.forEachIndexed { index, destination ->
             SkrootproNavItem(
                 destination = destination,
+                state = customIcons.stateFor(destination),
                 selected = selectedIndex == index,
                 onClick = { onSelected(index) },
                 modifier = Modifier.weight(1f),
@@ -332,10 +338,13 @@ fun SkrootproBottomBar(
 @Composable
 private fun SkrootproNavItem(
     destination: MainDestination,
+    state: CustomNavigationIconState,
     selected: Boolean,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val label = state.displayLabel(stringResource(destination.label))
+    val contentColor = if (selected) Color.White else SkrootproColors.Muted
     Row(
         modifier = modifier
             .height(34.dp)
@@ -348,9 +357,20 @@ private fun SkrootproNavItem(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.Center,
     ) {
+        if (state.hasSelected) {
+            NavigationDestinationIcon(
+                destination = destination,
+                state = state,
+                contentDescription = label,
+                tint = contentColor,
+                modifier = Modifier.size(16.dp),
+                alpha = if (selected) 1f else 0.72f,
+            )
+            Spacer(modifier = Modifier.width(4.dp))
+        }
         Text(
-            text = stringResource(destination.label),
-            color = if (selected) Color.White else SkrootproColors.Muted,
+            text = label,
+            color = contentColor,
             fontSize = skrootproSp(14.5f, maxScale = 1.0f),
             fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
             maxLines = 1,

@@ -318,6 +318,7 @@ private fun SusfsStatusPanel(
         state.available -> stringResource(R.string.susfs_path_available, state.toolPath)
         state.error == "gki_mode_required" -> stringResource(R.string.susfs_path_gki_required)
         state.error == "root_unavailable" -> stringResource(R.string.susfs_path_root_unavailable)
+        state.error == "path_feature_unavailable" -> stringResource(R.string.susfs_path_feature_unavailable)
         else -> stringResource(R.string.susfs_path_tool_unavailable)
     }
     Surface(
@@ -348,6 +349,29 @@ private fun SusfsStatusPanel(
                     fontWeight = FontWeight.SemiBold,
                 )
                 Text(text = message, style = MaterialTheme.typography.bodySmall)
+                if (!loading && state.toolPath.isNotBlank()) {
+                    Text(
+                        text = if (state.capabilities.version.isBlank()) {
+                            stringResource(R.string.susfs_path_legacy_probe)
+                        } else {
+                            stringResource(R.string.susfs_path_version, state.capabilities.version)
+                        },
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                    Text(
+                        text = stringResource(
+                            R.string.susfs_path_capabilities,
+                            state.capabilities.features.size,
+                            state.capabilities.supportsPathLoop,
+                            state.capabilities.supportsTryUmount,
+                            state.capabilities.supportsKstat,
+                            state.capabilities.supportsOpenRedirect,
+                        ),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
             }
         }
     }

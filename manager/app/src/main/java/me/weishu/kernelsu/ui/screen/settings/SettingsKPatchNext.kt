@@ -36,12 +36,17 @@ internal val SettingsUiState.isKPatchNextSwitchChecked: Boolean
 
 internal val SettingsUiState.canToggleKPatchNext: Boolean
     get() = runtimeModeResolved &&
+        isLkmMode &&
         !isLateLoadMode &&
         !isKPatchNextOperationRunning &&
         (kPatchNextConflict == null || isKPatchNextSwitchChecked)
 
 internal val SettingsUiState.canOpenKPatchNextWebUi: Boolean
-    get() = runtimeModeResolved && !isLateLoadMode && isKPatchNextEnabled && isKPatchNextWebUiAvailable
+    get() = runtimeModeResolved &&
+        isLkmMode &&
+        !isLateLoadMode &&
+        isKPatchNextEnabled &&
+        isKPatchNextWebUiAvailable
 
 @Composable
 internal fun pathConfigTitle(uiState: SettingsUiState): String = stringResource(

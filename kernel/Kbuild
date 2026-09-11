@@ -55,6 +55,20 @@ kernelsu-objs += feature/adb_root.o
 kernelsu-objs += feature/selinux_hide.o
 kernelsu-objs += feature/avc_spoof.o
 
+ifeq ($(CONFIG_KPM),y)
+ifneq ($(CONFIG_KSU),y)
+$(error CONFIG_KPM requires built-in CONFIG_KSU=y)
+endif
+ifneq ($(CONFIG_ARM64),y)
+$(error CONFIG_KPM requires CONFIG_ARM64=y)
+endif
+# Native KPM is a built-in GKI ABI bridge. It must never be linked into the
+# LKM variant, whose KPM backend is provided by KPatch-Next.
+kernelsu-objs += kpm/kpm.o
+kernelsu-objs += kpm/compact.o
+kernelsu-objs += kpm/super_access.o
+endif
+
 ifdef KBUILD_EXTMOD
 ifeq ($(CONFIG_KSU_DISABLE_MANAGER),y)
 ccflags-y += -DCONFIG_KSU_DISABLE_MANAGER=1

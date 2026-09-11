@@ -42,15 +42,13 @@ const APKESU_EXTERNAL_SERVICE_FILES: [&str; 7] = [
     "/data/adb/service.d/99-apkesu-graphics-renderer.sh.tmp",
 ];
 
-type PropertyReadCallback = unsafe extern "C" fn(*mut c_void, *const c_char, *const c_char, u32);
-
 unsafe extern "C" {
     fn __system_property_find(name: *const c_char) -> *const c_void;
-    fn __system_property_read_callback(
+    fn __system_property_read(
         property_info: *const c_void,
-        callback: PropertyReadCallback,
-        cookie: *mut c_void,
-    );
+        name: *mut c_char,
+        value: *mut c_char,
+    ) -> i32;
 }
 
 #[macro_export]
@@ -129,21 +127,6 @@ pub fn ensure_binary<T: AsRef<Path>>(
     Ok(())
 }
 
-unsafe extern "C" fn property_read_callback(
-    cookie: *mut c_void,
-    _name: *const c_char,
-    value: *const c_char,
-    _serial: u32,
-) {
-    if cookie.is_null() || value.is_null() {
-        return;
-    }
-
-    let result = unsafe { &mut *cookie.cast::<Option<String>>() };
-    let value = unsafe { CStr::from_ptr(value) };
-    *result = Some(value.to_string_lossy().into_owned());
-}
-
 pub fn getprop(name: &str) -> Option<String> {
     let name = CString::new(name).ok()?;
     let property_info = unsafe { __system_property_find(name.as_ptr()) };
@@ -151,15 +134,17 @@ pub fn getprop(name: &str) -> Option<String> {
         return None;
     }
 
-    let mut value = None;
-    unsafe {
-        __system_property_read_callback(
-            property_info,
-            property_read_callback,
-            std::ptr::addr_of_mut!(value).cast(),
-        );
+    let mut value = [0 as c_char; 92];
+    let result =
+        unsafe { __system_property_read(property_info, std::ptr::null_mut(), value.as_mut_ptr()) };
+    if result < 0 {
+        return None;
     }
-    value
+    Some(
+        unsafe { CStr::from_ptr(value.as_ptr()) }
+            .to_string_lossy()
+            .into_owned(),
+    )
 }
 
 pub fn is_safe_mode() -> bool {

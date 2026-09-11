@@ -34,8 +34,11 @@ mod feature;
 mod init_event;
 #[cfg(target_os = "android")]
 mod kpatch_next;
+mod kpimg;
 #[cfg(target_os = "android")]
 mod kpm;
+mod kpm_abi;
+mod kpm_backend;
 #[cfg(target_os = "android")]
 #[allow(nonstandard_style, unused, unsafe_op_in_unsafe_fn)]
 mod ksu_uapi;

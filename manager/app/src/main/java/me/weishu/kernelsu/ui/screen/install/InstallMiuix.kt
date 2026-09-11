@@ -245,10 +245,10 @@ private fun OptionalSettingsCard(
                     onSelectPartition = actions.onSelectPartition,
                 )
             }
-            if (state.installMethod != null && state.installMethod !is InstallMethod.AnyKernel && state.installMethod !is InstallMethod.DownloadFile) {
+            if (state.installMethod != null && state.installMethod !is InstallMethod.AnyKernel) {
                 PatchModeSelector(state, actions)
             }
-            val usesBuiltInLkm = state.installMethod !is InstallMethod.DownloadFile && state.installMethod !is InstallMethod.AnyKernel &&
+            val usesBuiltInLkm = state.patchMode != BootPatchMode.NativeKpm && state.installMethod !is InstallMethod.DownloadFile && state.installMethod !is InstallMethod.AnyKernel &&
                     (state.patchMode != BootPatchMode.Normal ||
                     state.lkmSelection !is LkmSelection.LkmUri
                     )
@@ -265,7 +265,7 @@ private fun OptionalSettingsCard(
                     onClearLkm = actions.onClearLkm,
                 )
             }
-            AdvancedOptionsPanel(
+            if (state.patchMode != BootPatchMode.NativeKpm) AdvancedOptionsPanel(
                 state = state,
                 actions = actions,
             )

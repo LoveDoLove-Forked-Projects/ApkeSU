@@ -109,6 +109,7 @@ fun InstallScreen() {
     }
     val selectFileTip = stringResource(id = R.string.select_file_tip, defaultPartition)
     val selectFileTipNoGki = stringResource(id = R.string.select_file_tip_nogki)
+    val nativeKpmTip = stringResource(R.string.install_patch_mode_native_kpm_summary)
     val downloadFileSummary = stringResource(id = R.string.download_dialog_msg)
     val installMethodOptions = remember(
         rootAvailable,
@@ -117,12 +118,14 @@ fun InstallScreen() {
         selectFileTip,
         selectFileTipNoGki,
         downloadFileSummary,
+        patchMode,
+        nativeKpmTip,
     ) {
         buildList {
-            add(InstallMethod.SelectFile(summary = if (isGkiDevice) selectFileTip else selectFileTipNoGki))
+            add(InstallMethod.SelectFile(summary = if (patchMode == BootPatchMode.NativeKpm) nativeKpmTip else if (isGkiDevice) selectFileTip else selectFileTipNoGki))
             add(InstallMethod.DownloadFile(summary = downloadFileSummary))
-            if (rootAvailable) add(InstallMethod.AnyKernel())
-            if (isGkiDevice) {
+            if (rootAvailable && patchMode != BootPatchMode.NativeKpm) add(InstallMethod.AnyKernel())
+            if (isGkiDevice && patchMode != BootPatchMode.NativeKpm) {
                 add(InstallMethod.DirectInstall)
                 if (rootAvailable && isAbDevice) add(InstallMethod.DirectInstallToInactiveSlot)
             }
@@ -214,6 +217,10 @@ fun InstallScreen() {
 
     val onInstall = { selectedLkm: LkmSelection ->
         installMethod?.let { method ->
+            if (!patchMode.supportsInstallMethod(method)) {
+                showMessage(nativeKpmTip)
+                return@let
+            }
             if (method is InstallMethod.SelectFile && method.uri == null) {
                 return@let
             }
@@ -300,7 +307,8 @@ fun InstallScreen() {
                         return@launch
                     }
                     remotePartitions = result.partitions
-                    val selectedIndex = result.partitions.indexOf(defaultPartition).coerceAtLeast(0)
+                    val preferred = if (patchMode == BootPatchMode.NativeKpm) "boot" else defaultPartition
+                    val selectedIndex = result.partitions.indexOf(preferred).coerceAtLeast(0)
                     remotePartitionSelectionIndex = selectedIndex
                     replaceInstallMethod(
                         InstallMethod.DownloadFile(
@@ -401,7 +409,7 @@ fun InstallScreen() {
         else -> InstallKmiSource.None
     }
     val isRemoteDownload = installMethod is InstallMethod.DownloadFile
-    val usesBuiltInLkm = !isRemoteDownload && installMethod !is InstallMethod.AnyKernel &&
+    val usesBuiltInLkm = patchMode != BootPatchMode.NativeKpm && !isRemoteDownload && installMethod !is InstallMethod.AnyKernel &&
             (patchMode != BootPatchMode.Normal || lkmSelection !is LkmSelection.LkmUri)
     val targetKmiSupported = targetKmi.isNotBlank() &&
             (supportedKmis.isEmpty() || targetKmi in supportedKmis)
@@ -418,11 +426,11 @@ fun InstallScreen() {
         slotSuffix = slotSuffix,
         installMethodOptions = installMethodOptions,
         rootAvailable = rootAvailable,
-        canSelectPartition = (if (isRemoteDownload) remoteDisplayPartitions else displayPartitions).isNotEmpty() &&
+        canSelectPartition = patchMode != BootPatchMode.NativeKpm && (if (isRemoteDownload) remoteDisplayPartitions else displayPartitions).isNotEmpty() &&
                 (installMethod is InstallMethod.DirectInstall ||
                         installMethod is InstallMethod.DirectInstallToInactiveSlot ||
                         installMethod is InstallMethod.DownloadFile),
-        canInstall = canInstall && patchReady &&
+        canInstall = canInstall && patchReady && patchMode.supportsInstallMethod(installMethod) &&
                 (!usesBuiltInLkm || targetKmiSource != InstallKmiSource.Detecting) &&
                 !remoteProbeInProgress &&
                 !navigationLocked,
@@ -462,7 +470,25 @@ fun InstallScreen() {
         onSelectBootImage = {
             selectImageLauncher.launch(BOOT_IMAGE_MIME_TYPES)
         },
-        onSelectPatchMode = { selectedMode -> patchMode = selectedMode },
+        onSelectPatchMode = { selectedMode ->
+            patchMode = selectedMode
+            if (selectedMode == BootPatchMode.NativeKpm) {
+                replaceLkmSelection(LkmSelection.KmiNone)
+                allowShell = false
+                enableAdb = false
+                forceBackup = false
+                advancedOptionsShown = false
+                showChooseKmiDialog.value = false
+                installAfterKmiSelection = false
+                val method = installMethod
+                if (method is InstallMethod.DownloadFile && "boot" in remotePartitions) {
+                    remotePartitionSelectionIndex = remotePartitions.indexOf("boot")
+                    replaceInstallMethod(method.copy(partition = "boot"))
+                } else if (!selectedMode.supportsInstallMethod(method)) {
+                    replaceInstallMethod(InstallMethod.SelectFile(summary = nativeKpmTip))
+                }
+            }
+        },
         onSelectPatchKmi = {
             installAfterKmiSelection = false
             showChooseKmiDialog.value = true
@@ -491,6 +517,10 @@ fun InstallScreen() {
         },
         onNext = onNext@{
             val method = installMethod
+            if (patchMode == BootPatchMode.NativeKpm) {
+                if (patchMode.supportsInstallMethod(method)) onInstall(LkmSelection.KmiNone)
+                return@onNext
+            }
             val isAnyKernelMode = method is InstallMethod.AnyKernel
             if (isAnyKernelMode) {
                 onInstall(LkmSelection.KmiNone)

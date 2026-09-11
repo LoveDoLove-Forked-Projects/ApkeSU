@@ -1,4 +1,4 @@
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, bail, ensure};
 use serde_json::json;
 use std::os::unix::fs::PermissionsExt;
 use std::{
@@ -6,7 +6,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use crate::{defs, module, utils};
+use crate::{defs, ksucalls, module, utils};
 
 pub const KPATCH_NEXT_MODULE_ID: &str = "KPatch-Next";
 
@@ -17,6 +17,25 @@ const MODULE_VERSION_CODE_FALLBACK: &str = "1";
 const KPATCH_NEXT_DATA_DIR: &str = "/data/adb/kp-next";
 
 pub fn print_status() {
+    if !ksucalls::is_lkm_mode() || ksucalls::is_late_load() {
+        println!(
+            "{}",
+            json!({
+                "moduleId": KPATCH_NEXT_MODULE_ID,
+                "moduleName": MODULE_NAME_FALLBACK,
+                "installed": false,
+                "enabled": false,
+                "webui": false,
+                "backend": "unsupported",
+                "reason": if ksucalls::is_late_load() {
+                    "KPatch-Next is disabled in late-load mode"
+                } else {
+                    "KPatch-Next is only available in LKM mode"
+                },
+            })
+        );
+        return;
+    }
     let module_dir = module_dir();
     let update_dir = update_dir();
     let module_prop = module::read_module_prop(&module_dir).unwrap_or_default();
@@ -65,6 +84,7 @@ pub fn print_status() {
 }
 
 pub fn enable() -> Result<()> {
+    ensure_kpatch_mode()?;
     let cleanup_synchronized_kpms_on_failure = !is_enabled();
     crate::kpm::migrate_to_kpatch_next()?;
     let module_dir = module_dir();
@@ -119,6 +139,9 @@ fn cleanup_after_install_failure(
 }
 
 pub fn is_enabled() -> bool {
+    if !ksucalls::is_lkm_mode() || ksucalls::is_late_load() {
+        return false;
+    }
     let module_dir = module_dir();
     module_dir.join("module.prop").exists()
         && !module_dir.join(defs::DISABLE_FILE_NAME).exists()
@@ -126,13 +149,21 @@ pub fn is_enabled() -> bool {
 }
 
 pub fn disable() -> Result<()> {
-    crate::kpm::stop_kpatch_runtime()?;
+    ensure_kpatch_mode()?;
     let module_dir = module_dir();
     let update_dir = update_dir();
     for dir in [&module_dir, &update_dir] {
         if dir.is_symlink() {
             bail!("{} is a symlink, refusing to remove it", dir.display());
         }
+    }
+    // A fresh installation lives only in modules_update and has never owned
+    // this boot's KPatch runtime. Requiring `kpatch hello` in that state makes
+    // it impossible to cancel an installation before the first reboot. Once
+    // an active module exists, keep the fail-closed runtime handoff so loaded
+    // KPMs cannot be orphaned in the kernel.
+    if active_module_may_own_runtime(&module_dir) {
+        crate::kpm::stop_kpatch_runtime()?;
     }
     let active_touched = ensure_remove_marker_if_dir_exists(&module_dir)?;
     let update_touched = ensure_remove_marker_if_dir_exists(&update_dir)?;
@@ -141,6 +172,18 @@ pub fn disable() -> Result<()> {
     if touched && let Err(e) = module::regenerate_preinit_rc() {
         log::warn!("regenerate preinit rc failed: {e}");
     }
+    Ok(())
+}
+
+fn active_module_may_own_runtime(module_dir: &Path) -> bool {
+    module_dir.join("module.prop").is_file()
+}
+
+fn ensure_kpatch_mode() -> Result<()> {
+    ensure!(
+        ksucalls::is_lkm_mode() && !ksucalls::is_late_load(),
+        "KPatch-Next is only available in LKM mode and is disabled in late-load mode"
+    );
     Ok(())
 }
 
@@ -160,6 +203,24 @@ REHOOK="$(cat "$KPNDIR/rehook" 2>/dev/null)"
 KSU_KPM_POLICY="/data/adb/ksu/kpm/.policy.json"
 KSU_KPM_PENDING="/data/adb/ksu/kpm/.kpatch_boot_pending"
 KSU_KPM_EXCLUDES="/data/adb/ksu/kpm/.package_config"
+KSUD="/data/adb/ksu/bin/ksud"
+
+# KPatch-Next is an LKM backend only.  Keep this guard before every KPatch
+# command so a stale installed module cannot start on a GKI/Native boot.
+if [ ! -x "$KSUD" ]; then
+    touch "$MODDIR/unresolved"
+    exit 0
+fi
+KSU_DEBUG_INFO="$("$KSUD" debug info 2>/dev/null)"
+KSU_LKM_MODE="$(printf '%s\n' "$KSU_DEBUG_INFO" | sed -n 's/^lkm: //p')"
+KSU_LATE_LOAD="$(printf '%s\n' "$KSU_DEBUG_INFO" | sed -n 's/^late_load: //p')"
+if [ "$KSU_LKM_MODE" != "true" ] || [ "$KSU_LATE_LOAD" != "false" ]; then
+    touch "$MODDIR/unresolved"
+    exit 0
+fi
+
+mkdir -p "$KPNDIR/kpm" "$(dirname "$KSU_KPM_PENDING")"
+chmod 700 "$KPNDIR" "$KPNDIR/kpm" "$(dirname "$KSU_KPM_PENDING")" 2>/dev/null
 
 remove_pending_id() {
     [ -f "$KSU_KPM_PENDING" ] || return 0
@@ -297,5 +358,21 @@ fn cleanup_partial_module_dir(module_dir: &Path, had_module_prop: bool) {
     }
     if let Err(e) = fs::remove_dir_all(module_dir) {
         log::warn!("failed to clean partial KPatch Next module dir: {e}");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::active_module_may_own_runtime;
+    use std::fs;
+    use tempfile::tempdir;
+
+    #[test]
+    fn pending_install_does_not_claim_the_current_runtime() {
+        let root = tempdir().unwrap();
+        assert!(!active_module_may_own_runtime(root.path()));
+
+        fs::write(root.path().join("module.prop"), "id=KPatch-Next\n").unwrap();
+        assert!(active_module_may_own_runtime(root.path()));
     }
 }

@@ -59,6 +59,62 @@ class SettingsFeatureAvailabilityTest {
     }
 
     @Test
+    fun builtInGkiModeDisablesKpatchNextControls() {
+        val state = SettingsUiState(
+            isLkmMode = false,
+            isLateLoadMode = false,
+            runtimeModeResolved = true,
+            isKPatchNextEnabled = true,
+            isKPatchNextWebUiAvailable = true,
+        )
+
+        assertFalse(state.canToggleKPatchNext)
+        assertFalse(state.canOpenKPatchNextWebUi)
+    }
+
+    @Test
+    fun nativeGkiCapabilityShowsItsOwnKpmEntry() {
+        val state = SettingsUiState(
+            isLkmMode = false,
+            isLateLoadMode = false,
+            runtimeModeResolved = true,
+            kpmBackend = "native-gki",
+            isKpmManagementAvailable = true,
+            isKpmCapabilityResolved = true,
+        )
+
+        assertTrue(state.isKpmSettingsEntryVisible)
+    }
+
+    @Test
+    fun staleKpatchStateCannotExposeKpmEntryInGkiMode() {
+        val state = SettingsUiState(
+            isLkmMode = false,
+            isLateLoadMode = false,
+            runtimeModeResolved = true,
+            isKPatchNextEnabled = true,
+            kpmBackend = "kpatch-next",
+            isKpmManagementAvailable = true,
+            isKpmCapabilityResolved = true,
+        )
+
+        assertFalse(state.isKpmSettingsEntryVisible)
+    }
+
+    @Test
+    fun unresolvedKpmCapabilityDoesNotExposeSettingsEntry() {
+        val state = SettingsUiState(
+            isLkmMode = false,
+            isLateLoadMode = false,
+            runtimeModeResolved = true,
+            kpmBackend = "native-gki",
+            isKpmManagementAvailable = true,
+        )
+
+        assertFalse(state.isKpmSettingsEntryVisible)
+    }
+
+    @Test
     fun unresolvedModeKeepsRuntimeSpecificEntriesDisabled() {
         val state = SettingsUiState()
 

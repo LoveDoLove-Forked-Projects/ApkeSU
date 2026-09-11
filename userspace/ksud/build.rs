@@ -224,19 +224,18 @@ fn assemble_bootstrap() {
 }
 
 fn assert_release_assets() {
+    for name in ["kpimg", "kptools"] {
+        println!("cargo:rerun-if-changed=bin/aarch64/{name}");
+    }
     if env::var("PROFILE").as_deref() != Ok("release") {
         return;
     }
     let target_arch = env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default();
     let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
-    let asset_dir = if target_arch == "x86_64" && target_os == "android" {
-        "bin/x86_64"
-    } else {
-        "bin/aarch64"
-    };
-    if asset_dir != "bin/aarch64" {
+    if target_arch != "aarch64" || target_os != "android" {
         return;
     }
+    let asset_dir = "bin/aarch64";
     let manifest_dir = env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR not set");
     let ksuinit = Path::new(&manifest_dir).join(asset_dir).join("ksuinit");
     println!("cargo:rerun-if-changed={}", ksuinit.display());
@@ -246,6 +245,14 @@ fn assert_release_assets() {
          `cross build --package ksuinit --target aarch64-unknown-linux-musl --release`",
         ksuinit.display()
     );
+    for name in ["kpimg", "kptools"] {
+        let path = Path::new(&manifest_dir).join(asset_dir).join(name);
+        assert!(
+            path.is_file(),
+            "missing {}; run scripts/build_kernelpatch first",
+            path.display()
+        );
+    }
 }
 
 fn main() {

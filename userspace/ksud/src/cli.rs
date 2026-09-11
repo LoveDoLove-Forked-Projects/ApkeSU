@@ -6,6 +6,7 @@ use android_logger::Config;
 use log::{LevelFilter, error, info, warn};
 
 use crate::boot_patch::{BootPatchArgs, BootRestoreArgs};
+use crate::kpimg::{BootInfoKpimgArgs, BootPatchKpimgArgs};
 use crate::lkm_image::BootPatchV2Args;
 use crate::module::regenerate_preinit_rc;
 use crate::{
@@ -182,6 +183,12 @@ enum Commands {
     ///
     /// This path always targets boot and never selects init_boot or vendor_boot.
     BootPatchV2(BootPatchV2Args),
+
+    /// Inject Native GKI KPM into an ABI-enabled boot image without flashing
+    BootPatchKpimg(BootPatchKpimgArgs),
+
+    /// Inspect a boot image for the Native GKI KPM runtime
+    BootInfoKpimg(BootInfoKpimgArgs),
 
     /// Show boot information
     BootInfo {
@@ -1316,6 +1323,9 @@ pub fn run() -> Result<()> {
         Commands::BootPatch(boot_patch) => crate::boot_patch::patch(boot_patch),
 
         Commands::BootPatchV2(boot_patch) => crate::lkm_image::patch_boot(&boot_patch),
+
+        Commands::BootPatchKpimg(kpimg_options) => crate::kpimg::patch_boot(&kpimg_options),
+        Commands::BootInfoKpimg(kpimg_options) => crate::kpimg::print_info(&kpimg_options),
 
         Commands::BootInfo { command } => match command {
             BootInfo::CurrentKmi => {

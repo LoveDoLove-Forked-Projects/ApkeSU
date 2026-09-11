@@ -38,6 +38,7 @@ import kotlinx.coroutines.launch
 import me.weishu.kernelsu.Natives
 import me.weishu.kernelsu.R
 import me.weishu.kernelsu.ui.LocalMainPagerState
+import me.weishu.kernelsu.ui.util.LocalCustomNavigationIcons
 import me.weishu.kernelsu.ui.util.rootAvailable
 
 @Composable
@@ -49,6 +50,7 @@ fun NavigationRailMaterial(
     val isManager = Natives.isManager
     val fullFeatured = isManager && !Natives.requireNewKernel() && rootAvailable()
     val mainPagerState = LocalMainPagerState.current
+    val customIcons = LocalCustomNavigationIcons.current
 
     if (!fullFeatured) return
 
@@ -87,6 +89,7 @@ fun NavigationRailMaterial(
     ) {
         destinations.forEachIndexed { index, destination ->
             val selected = mainPagerState.selectedPage == index
+            val label = customIcons.labelFor(destination, stringResource(destination.label))
             WideNavigationRailItem(
                 railExpanded = expanded,
                 selected = selected,
@@ -97,12 +100,13 @@ fun NavigationRailMaterial(
                 },
                 icon = {
                     NavigationIconWithBadge(
-                        icon = destination.icon,
-                        contentDescription = stringResource(destination.label),
+                        destination = destination,
+                        state = customIcons.stateFor(destination),
+                        contentDescription = label,
                         badge = badgeFor(destination, navigationBadge),
                     )
                 },
-                label = { Text(stringResource(destination.label)) }
+                label = { Text(label) }
             )
         }
     }

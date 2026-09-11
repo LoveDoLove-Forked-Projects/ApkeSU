@@ -18,6 +18,7 @@ import me.weishu.kernelsu.ui.util.CustomPageBackgroundSet
 import me.weishu.kernelsu.ui.util.CustomPageBackgroundTarget
 import me.weishu.kernelsu.ui.util.CustomWallpaperCrop
 import me.weishu.kernelsu.ui.util.KPatchNextStatus
+import me.weishu.kernelsu.ui.util.KpmCaps
 import me.weishu.kernelsu.ui.util.StartupAnimationSettings
 
 const val SHOW_VERSION_MISMATCH_WARNING_KEY = "show_version_mismatch_warning"
@@ -165,6 +166,7 @@ interface SettingsRepository {
 
     suspend fun getKPatchNextStatus(): KPatchNextStatus
     fun setKPatchNextEnabled(enabled: Boolean): Boolean
+    suspend fun getKpmCaps(): KpmCaps
 
     suspend fun getEpkesuHideStatus(): Boolean
     fun setEpkesuHideEnabled(enabled: Boolean): Boolean

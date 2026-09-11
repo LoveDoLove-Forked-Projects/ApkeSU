@@ -65,6 +65,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -74,6 +75,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.RectangleShape
+import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
@@ -164,12 +166,33 @@ fun KpmScreen(
     bottomInnerPadding: Dp = 0.dp,
 ) {
     val activity = LocalActivity.current
-    if (activity == null) {
-        NativeKpmScreen(inPager = inPager, bottomInnerPadding = bottomInnerPadding)
+    val caps by produceState<KpmCaps?>(initialValue = null, activity) {
+        if (activity != null) {
+            value = withContext(Dispatchers.IO) {
+                runCatching { getKpmCaps() }.getOrNull()
+            }
+        }
+    }
+    val useKpatchNext = caps?.let {
+        it.error.isBlank() &&
+            it.backend == "kpatch-next" &&
+            it.managementAvailable &&
+            !it.lateLoad
+    } == true
+
+    // The Native-GKI page is also the safe loading state while capabilities are
+    // being probed. This keeps GKI from constructing a KPatch WebView speculatively.
+    if (activity == null || !useKpatchNext) {
+        NativeKpmScreen(
+            inPager = inPager,
+            bottomInnerPadding = bottomInnerPadding,
+            initialCaps = caps,
+            showExclusions = false,
+        )
         return
     }
 
-    val webUIState = remember {
+    val webUIState = remember(activity) {
         WebUIState().also { it.configureKpatchNextEmbedded() }
     }
     var webUiReloadToken by rememberSaveable { mutableStateOf(0) }
@@ -191,6 +214,8 @@ fun KpmScreen(
         NativeKpmScreen(
             inPager = inPager,
             bottomInnerPadding = bottomInnerPadding,
+            initialCaps = caps,
+            showExclusions = true,
             webUiError = webUiError,
             onRetryWebUi = {
                 webUIState.dispose(activity)
@@ -306,6 +331,7 @@ private fun KpmStyledScreen(
     inPager: Boolean,
     containsEmbeddedAndroidView: Boolean,
     loading: Boolean = false,
+    showExclusions: Boolean = true,
     onKpmClick: () -> Unit,
     onExcludeClick: () -> Unit,
     content: @Composable (PaddingValues) -> Unit,
@@ -333,10 +359,14 @@ private fun KpmStyledScreen(
             topActionIcon = if (!inPager) backIcon else Icons.Rounded.Bolt,
             onTopActionClick = if (!inPager) onBack else onKpmClick,
             topActionContentDescription = if (!inPager) backDescription else kpmDescription,
-            secondaryTopActionIcon = if (!inPager) Icons.Rounded.Bolt else Icons.Rounded.Security,
+            secondaryTopActionIcon = if (!inPager) {
+                Icons.Rounded.Bolt
+            } else {
+                Icons.Rounded.Security.takeIf { showExclusions }
+            },
             onSecondaryTopActionClick = if (!inPager) onKpmClick else onExcludeClick,
             secondaryTopActionContentDescription = if (!inPager) kpmDescription else excludeDescription,
-            tertiaryTopActionIcon = if (!inPager) Icons.Rounded.Security else null,
+            tertiaryTopActionIcon = if (!inPager && showExclusions) Icons.Rounded.Security else null,
             onTertiaryTopActionClick = onExcludeClick,
             tertiaryTopActionContentDescription = excludeDescription,
         ) { padding -> content(padding) }
@@ -349,10 +379,14 @@ private fun KpmStyledScreen(
             topActionIcon = if (!inPager) backIcon else Icons.Rounded.Bolt,
             onTopActionClick = if (!inPager) onBack else onKpmClick,
             topActionContentDescription = if (!inPager) backDescription else kpmDescription,
-            secondaryTopActionIcon = if (!inPager) Icons.Rounded.Bolt else Icons.Rounded.Security,
+            secondaryTopActionIcon = if (!inPager) {
+                Icons.Rounded.Bolt
+            } else {
+                Icons.Rounded.Security.takeIf { showExclusions }
+            },
             onSecondaryTopActionClick = if (!inPager) onKpmClick else onExcludeClick,
             secondaryTopActionContentDescription = if (!inPager) kpmDescription else excludeDescription,
-            tertiaryTopActionIcon = if (!inPager) Icons.Rounded.Security else null,
+            tertiaryTopActionIcon = if (!inPager && showExclusions) Icons.Rounded.Security else null,
             onTertiaryTopActionClick = onExcludeClick,
             tertiaryTopActionContentDescription = excludeDescription,
         ) { padding -> content(padding) }
@@ -366,7 +400,7 @@ private fun KpmStyledScreen(
             secondaryActionIcon = Icons.Rounded.Bolt,
             onSecondaryActionClick = onKpmClick,
             secondaryActionContentDescription = kpmDescription,
-            tertiaryActionIcon = Icons.Rounded.Security,
+            tertiaryActionIcon = Icons.Rounded.Security.takeIf { showExclusions },
             onTertiaryActionClick = onExcludeClick,
             tertiaryActionContentDescription = excludeDescription,
             bottomInnerPadding = 0.dp,
@@ -395,8 +429,10 @@ private fun KpmStyledScreen(
                         IconButton(onClick = onKpmClick, enabled = !loading) {
                             Icon(Icons.Rounded.Bolt, kpmDescription, tint = tint(true))
                         }
-                        IconButton(onClick = onExcludeClick, enabled = !loading) {
-                            Icon(Icons.Rounded.Security, excludeDescription)
+                        if (showExclusions) {
+                            IconButton(onClick = onExcludeClick, enabled = !loading) {
+                                Icon(Icons.Rounded.Security, excludeDescription)
+                            }
                         }
                     },
                 )
@@ -409,6 +445,7 @@ private fun KpmStyledScreen(
             inPager = inPager,
             containsEmbeddedAndroidView = containsEmbeddedAndroidView,
             loading = loading,
+            showExclusions = showExclusions,
             onBack = onBack,
             onKpmClick = onKpmClick,
             onExcludeClick = onExcludeClick,
@@ -423,6 +460,7 @@ private fun KpmStyledMiuixScreen(
     inPager: Boolean,
     containsEmbeddedAndroidView: Boolean,
     loading: Boolean,
+    showExclusions: Boolean,
     onBack: () -> Unit,
     onKpmClick: () -> Unit,
     onExcludeClick: () -> Unit,
@@ -452,12 +490,14 @@ private fun KpmStyledMiuixScreen(
                         MiuixIconButton(onClick = onKpmClick) {
                             MiuixIcon(Icons.Rounded.Bolt, stringResource(R.string.kpm_manage), tint = MiuixTheme.colorScheme.primary)
                         }
-                        MiuixIconButton(onClick = onExcludeClick) {
-                            MiuixIcon(
-                                Icons.Rounded.Security,
-                                stringResource(R.string.kpm_exclude_apps),
-                                tint = MiuixTheme.colorScheme.onSurface.copy(alpha = 0.72f),
-                            )
+                        if (showExclusions) {
+                            MiuixIconButton(onClick = onExcludeClick) {
+                                MiuixIcon(
+                                    Icons.Rounded.Security,
+                                    stringResource(R.string.kpm_exclude_apps),
+                                    tint = MiuixTheme.colorScheme.onSurface.copy(alpha = 0.72f),
+                                )
+                            }
                         }
                     },
                 )
@@ -476,6 +516,8 @@ private fun KpmStyledMiuixScreen(
 private fun NativeKpmScreen(
     inPager: Boolean = false,
     bottomInnerPadding: Dp = 0.dp,
+    initialCaps: KpmCaps? = null,
+    showExclusions: Boolean = false,
     webUiError: String? = null,
     onRetryWebUi: (() -> Unit)? = null,
 ) {
@@ -485,7 +527,7 @@ private fun NativeKpmScreen(
     val scope = rememberCoroutineScope()
     val onBack = dropUnlessResumed { navigator.pop() }
 
-    var caps by remember { mutableStateOf<KpmCaps?>(null) }
+    var caps by remember(initialCaps) { mutableStateOf(initialCaps) }
     var entries by remember { mutableStateOf(emptyList<KpmEntry>()) }
     var loading by remember { mutableStateOf(true) }
     var busy by remember { mutableStateOf(false) }
@@ -533,12 +575,14 @@ private fun NativeKpmScreen(
                             val listResult = getKpmList()
                             if (listResult.success) {
                                 entries = parseKpmEntries(listResult.output)
-                                val excludedResult = runCatching { getKpmExcludedApps() }
-                                excludedResult.onSuccess { apps ->
-                                    excludedApps = apps.mapTo(mutableSetOf()) { it.packageName }
-                                }.onFailure { error ->
-                                    errorMessage = error.message.orEmpty().ifBlank {
-                                        resources.getString(R.string.kpm_status_failed)
+                                if (nextCaps.backend == "kpatch-next" && showExclusions) {
+                                    val excludedResult = runCatching { getKpmExcludedApps() }
+                                    excludedResult.onSuccess { apps ->
+                                        excludedApps = apps.mapTo(mutableSetOf()) { it.packageName }
+                                    }.onFailure { error ->
+                                        errorMessage = error.message.orEmpty().ifBlank {
+                                            resources.getString(R.string.kpm_status_failed)
+                                        }
                                     }
                                 }
                             } else {
@@ -621,6 +665,7 @@ private fun NativeKpmScreen(
         inPager = inPager,
         containsEmbeddedAndroidView = false,
         loading = loading || busy,
+        showExclusions = showExclusions,
         onKpmClick = {
             if (webUiError != null && onRetryWebUi != null) onRetryWebUi() else refresh()
         },
@@ -657,6 +702,7 @@ private fun NativeKpmScreen(
                 entryCount = entries.size,
                 onImport = { importLauncher.launch(arrayOf("*/*")) },
                 onManageExclusions = { showExcludeDialog = true },
+                showExclusions = showExclusions,
                 onPolicyChanged = { enabled ->
                     runOperation { setKpmPolicy(enabled) }
                 },
@@ -699,6 +745,13 @@ private fun NativeKpmScreen(
                         message = stringResource(R.string.kpm_jailbreak_disabled_summary),
                     )
                 }
+                caps?.backend == "native-gki" && caps?.loaderReady == false && errorMessage.isBlank() -> {
+                    KpmMessageCard(
+                        icon = Icons.Rounded.Info,
+                        title = stringResource(R.string.kpm_native_loader_unavailable),
+                        message = stringResource(R.string.kpm_native_loader_unavailable_summary),
+                    )
+                }
                 caps?.kernelSupported == false && errorMessage.isBlank() -> {
                     val kpatchPending = caps?.backend == "kpatch-next" && caps?.managementAvailable == true
                     KpmMessageCard(
@@ -727,11 +780,14 @@ private fun NativeKpmScreen(
                     )
                 }
                 else -> entries.forEach { entry ->
+                    val runtimeOperationsEnabled = caps?.let {
+                        it.supported && it.loaderReady && it.policyEnabled && !it.lateLoad
+                    } == true
                     KpmEntryCard(
                         entry = entry,
                         busy = busy,
                         managementEnabled = caps?.managementAvailable == true && caps?.policyEnabled == true,
-                        runtimeEnabled = caps?.kernelSupported == true && caps?.policyEnabled == true,
+                        runtimeEnabled = runtimeOperationsEnabled,
                         onEnableChanged = { enabled ->
                             runOperation { setKpmEnabled(entry.id, enabled) }
                         },
@@ -1038,13 +1094,28 @@ private fun KpmOverviewCard(
     entryCount: Int,
     onImport: () -> Unit,
     onManageExclusions: () -> Unit,
+    showExclusions: Boolean,
     onPolicyChanged: (Boolean) -> Unit,
 ) {
-    val backendName = stringResource(R.string.kpm_backend_kpatch_next)
+    val currentCaps = caps
+    val backendName = when (caps?.backend) {
+        "native-gki" -> stringResource(R.string.kpm_backend_native_gki)
+        "kpatch-next" -> stringResource(R.string.kpm_backend_kpatch_next)
+        else -> stringResource(R.string.kpm_backend_unavailable)
+    }
+    val style = LocalInterfaceStyle.current
+    val cardShape = kpmCardShape(style)
+    val cardSurfaceColor = kpmCardSurfaceColor(style)
     Surface(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(16.dp),
-        color = immersiveSurfaceColor(MaterialTheme.colorScheme.surfaceContainerLow),
+        modifier = Modifier
+            .fillMaxWidth()
+            .kpmCardSurface(
+                style = style,
+                shape = cardShape,
+                surfaceColor = cardSurfaceColor,
+            ),
+        shape = cardShape,
+        color = Color.Transparent,
     ) {
         Column(
             modifier = Modifier.padding(16.dp),
@@ -1069,15 +1140,18 @@ private fun KpmOverviewCard(
                     Text(
                         text = when {
                             loading -> stringResource(R.string.kpm_checking)
-                            caps?.lateLoad == true -> stringResource(R.string.kpm_jailbreak_disabled)
-                            caps?.let { it.backend == "kpatch-next" && !it.kernelSupported } == true ->
+                            currentCaps == null -> stringResource(R.string.kpm_unsupported)
+                            currentCaps.lateLoad -> stringResource(R.string.kpm_jailbreak_disabled)
+                            currentCaps.backend == "kpatch-next" && !currentCaps.kernelSupported ->
                                 stringResource(R.string.kpm_kpatch_pending)
-                            caps?.kernelSupported != true -> stringResource(R.string.kpm_unsupported)
-                            caps.policyEnabled -> stringResource(
+                            currentCaps.backend == "native-gki" && !currentCaps.loaderReady ->
+                                stringResource(R.string.kpm_native_loader_unavailable)
+                            !currentCaps.kernelSupported -> stringResource(R.string.kpm_unsupported)
+                            currentCaps.policyEnabled -> stringResource(
                                 R.string.kpm_capability_summary,
                                 backendName,
-                                caps.abiVersion,
-                                caps.maxLoaded,
+                                currentCaps.abiVersion,
+                                currentCaps.maxLoaded,
                             )
                             else -> stringResource(R.string.kpm_policy_disabled)
                         },
@@ -1129,13 +1203,15 @@ private fun KpmOverviewCard(
                     Spacer(Modifier.width(8.dp))
                     Text(stringResource(R.string.kpm_import))
                 }
-                OutlinedButton(
-                    onClick = onManageExclusions,
-                    enabled = !loading && caps.policyEnabled,
-                ) {
-                    Icon(Icons.Rounded.Security, contentDescription = null)
-                    Spacer(Modifier.width(8.dp))
-                    Text(stringResource(R.string.kpm_exclude_apps))
+                if (showExclusions) {
+                    OutlinedButton(
+                        onClick = onManageExclusions,
+                        enabled = !loading && caps.policyEnabled,
+                    ) {
+                        Icon(Icons.Rounded.Security, contentDescription = null)
+                        Spacer(Modifier.width(8.dp))
+                        Text(stringResource(R.string.kpm_exclude_apps))
+                    }
                 }
             }
         }
@@ -1260,6 +1336,72 @@ private fun KpmExcludeDialog(
     )
 }
 
+private fun kpmCardShape(style: String): Shape {
+    return if (style == InterfaceStyle.Pixel.value) RectangleShape else RoundedCornerShape(16.dp)
+}
+
+@Composable
+private fun kpmCardSurfaceColor(style: String): Color {
+    return when (style) {
+        InterfaceStyle.Alpha.value -> AlphaColors.Surface
+        InterfaceStyle.Delta.value -> DeltaColors.Surface
+        InterfaceStyle.Skrootpro.value -> me.weishu.kernelsu.ui.component.skrootpro.SkrootproColors.Surface
+        else -> immersiveSurfaceColor(MaterialTheme.colorScheme.surfaceContainerLow)
+    }
+}
+
+@Composable
+private fun Modifier.kpmCardSurface(
+    style: String,
+    shape: Shape,
+    surfaceColor: Color,
+    customTarget: CustomCardTarget = CustomCardTarget.Default,
+): Modifier {
+    return then(
+        when (style) {
+            InterfaceStyle.Pixel.value -> Modifier.pixelMiuixCardSurface(
+                shape = shape,
+                customTarget = customTarget,
+            )
+            InterfaceStyle.Snow.value,
+            InterfaceStyle.Rain.value -> Modifier.snowMiuixCardSurface(
+                shape = shape,
+                customTarget = customTarget,
+            )
+            InterfaceStyle.LiquidGlass.value -> Modifier.globalLiquidGlassSurface(
+                shape = shape,
+                surfaceAlpha = 0.56f,
+                blurRadius = 12.dp,
+                cardStyle = FrostedGlassCardStyle.Mist,
+            )
+            InterfaceStyle.Alpha.value -> Modifier
+                .clip(shape)
+                .background(surfaceColor)
+                .border(1.dp, AlphaColors.Accent.copy(alpha = 0.34f), shape)
+                .uiDecoratedCard(shape = shape, customTarget = customTarget)
+            InterfaceStyle.Delta.value -> Modifier
+                .clip(shape)
+                .background(surfaceColor)
+                .border(1.dp, DeltaColors.Accent.copy(alpha = 0.44f), shape)
+                .uiDecoratedCard(shape = shape, customTarget = customTarget)
+            InterfaceStyle.Skrootpro.value -> Modifier
+                .clip(shape)
+                .background(surfaceColor)
+                .border(
+                    1.dp,
+                    me.weishu.kernelsu.ui.component.skrootpro.SkrootproColors.Purple.copy(alpha = 0.52f),
+                    shape,
+                )
+                .uiDecoratedCard(shape = shape, customTarget = customTarget)
+            else -> Modifier
+                .clip(shape)
+                .background(surfaceColor)
+                .border(1.dp, MaterialTheme.colorScheme.outlineVariant, shape)
+                .uiDecoratedCard(shape = shape, customTarget = customTarget)
+        }
+    )
+}
+
 @Composable
 private fun KpmEntryCard(
     entry: KpmEntry,
@@ -1279,50 +1421,19 @@ private fun KpmEntryCard(
     val wallpaperLoadState = rememberModuleCardWallpaperLoadState(wallpaperEntry)
     val wallpaperBitmap = wallpaperLoadState.bitmap
     val hasWallpaper = wallpaperEntry != null
-    val cardShape = if (style == InterfaceStyle.Pixel.value) RectangleShape else RoundedCornerShape(16.dp)
-    val cardSurfaceColor = when (style) {
-        InterfaceStyle.Alpha.value -> AlphaColors.Surface
-        InterfaceStyle.Delta.value -> DeltaColors.Surface
-        InterfaceStyle.Skrootpro.value -> me.weishu.kernelsu.ui.component.skrootpro.SkrootproColors.Surface
-        else -> immersiveSurfaceColor(MaterialTheme.colorScheme.surfaceContainerLow)
-    }
+    val cardShape = kpmCardShape(style)
+    val cardSurfaceColor = kpmCardSurfaceColor(style)
     val cardModifier = Modifier
         .fillMaxWidth()
-        .then(
-            when (style) {
-                InterfaceStyle.Pixel.value -> Modifier.pixelMiuixCardSurface(shape = cardShape)
-                InterfaceStyle.Snow.value,
-                InterfaceStyle.Rain.value -> Modifier.snowMiuixCardSurface(shape = cardShape)
-                InterfaceStyle.LiquidGlass.value -> Modifier.globalLiquidGlassSurface(
-                    shape = cardShape,
-                    surfaceAlpha = 0.56f,
-                    blurRadius = 12.dp,
-                    cardStyle = FrostedGlassCardStyle.Mist,
-                )
-                InterfaceStyle.Alpha.value -> Modifier
-                    .clip(cardShape)
-                    .background(AlphaColors.Surface)
-                    .border(1.dp, AlphaColors.Accent.copy(alpha = 0.34f), cardShape)
-                    .uiDecoratedCard(shape = cardShape)
-                InterfaceStyle.Delta.value -> Modifier
-                    .clip(cardShape)
-                    .background(DeltaColors.Surface)
-                    .border(1.dp, DeltaColors.Accent.copy(alpha = 0.44f), cardShape)
-                    .uiDecoratedCard(shape = cardShape)
-                InterfaceStyle.Skrootpro.value -> Modifier
-                    .clip(cardShape)
-                    .background(me.weishu.kernelsu.ui.component.skrootpro.SkrootproColors.Surface)
-                    .border(1.dp, me.weishu.kernelsu.ui.component.skrootpro.SkrootproColors.Purple.copy(alpha = 0.52f), cardShape)
-                    .uiDecoratedCard(shape = cardShape)
-                else -> Modifier
-                    .clip(cardShape)
-                    .background(cardSurfaceColor)
-                    .border(1.dp, MaterialTheme.colorScheme.outlineVariant, cardShape)
-                    .uiDecoratedCard(shape = cardShape)
-            }
+        .kpmCardSurface(
+            style = style,
+            shape = cardShape,
+            surfaceColor = cardSurfaceColor,
+            customTarget = CustomCardTarget.Module,
         )
     val statusColor = when {
         entry.quarantined -> MaterialTheme.colorScheme.error
+        !entry.runtimeKnown -> MaterialTheme.colorScheme.onSurfaceVariant
         entry.loaded -> MaterialTheme.colorScheme.primary
         entry.enabled -> MaterialTheme.colorScheme.tertiary
         else -> MaterialTheme.colorScheme.onSurfaceVariant
@@ -1393,6 +1504,7 @@ private fun KpmEntryCard(
                         R.string.kpm_quarantined,
                         entry.quarantineReason.ifBlank { stringResource(R.string.kpm_unknown_reason) },
                     )
+                    !entry.runtimeKnown -> stringResource(R.string.kpm_runtime_unknown)
                     entry.loaded -> stringResource(R.string.kpm_loaded)
                     entry.enabled -> stringResource(R.string.kpm_enabled)
                     else -> stringResource(R.string.kpm_disabled)
@@ -1460,11 +1572,19 @@ private fun KpmMessageCard(
     message: String,
     error: Boolean = false,
 ) {
+    val style = LocalInterfaceStyle.current
+    val cardShape = kpmCardShape(style)
     val color = if (error) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
     Surface(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(14.dp),
-        color = color.copy(alpha = 0.10f),
+        modifier = Modifier
+            .fillMaxWidth()
+            .kpmCardSurface(
+                style = style,
+                shape = cardShape,
+                surfaceColor = kpmCardSurfaceColor(style),
+            ),
+        shape = cardShape,
+        color = Color.Transparent,
     ) {
         Row(
             modifier = Modifier.padding(14.dp),

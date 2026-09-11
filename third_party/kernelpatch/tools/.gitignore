@@ -1,0 +1,41 @@
+# Prerequisites
+*.d
+
+# Object files
+*.o
+*.ko
+*.obj
+*.elf
+
+# Precompiled Headers
+*.gch
+*.pch
+
+# Libraries
+*.lib
+*.a
+*.la
+*.lo
+
+# Shared objects (inc. Windows DLLs)
+*.dll
+*.so
+*.so.*
+*.dylib
+cmake_install.cmake
+CMakeCache.txt
+CMakeFiles
+Makefile
+
+build/*
+
+preset.h
+kptools
+kptools.exe
+
+# ApkeSU vendors these two build inputs instead of generating them in place.
+!Makefile
+!preset.h
+
+# 
+build_android.sh

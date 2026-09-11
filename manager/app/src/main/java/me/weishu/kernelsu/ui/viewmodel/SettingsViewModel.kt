@@ -182,6 +182,7 @@ class SettingsViewModel(
             val isDefaultUmountModules = repo.isDefaultUmountModules()
             val builtinMountStatus = repo.getBuiltinMountStatus()
             val kPatchNextStatus = repo.getKPatchNextStatus()
+            val kpmCaps = repo.getKpmCaps()
             val isEpkesuHideEnabled = repo.getEpkesuHideStatus()
             val autoJailbreak = repo.autoJailbreak
             val useSoftReboot = repo.useSoftReboot
@@ -329,6 +330,17 @@ class SettingsViewModel(
                     } else {
                         it.kPatchNextConflict
                     },
+                    kpmBackend = if (kpmCaps.error.isBlank()) {
+                        kpmCaps.backend
+                    } else {
+                        it.kpmBackend
+                    },
+                    isKpmManagementAvailable = if (kpmCaps.error.isBlank()) {
+                        kpmCaps.managementAvailable
+                    } else {
+                        it.isKpmManagementAvailable
+                    },
+                    isKpmCapabilityResolved = kpmCaps.error.isBlank() || it.isKpmCapabilityResolved,
                     isEpkesuHideEnabled = isEpkesuHideEnabled,
                     isLkmMode = isLkmMode,
                     autoJailbreak = autoJailbreak,
@@ -1247,8 +1259,14 @@ class SettingsViewModel(
     }
 
     fun setKPatchNextEnabled(enabled: Boolean) {
-        if (Natives.isLateLoadMode) {
-            _uiState.update { it.copy(isLateLoadMode = true) }
+        if (!Natives.isLkmMode || Natives.isLateLoadMode) {
+            _uiState.update {
+                it.copy(
+                    isLkmMode = Natives.isLkmMode,
+                    isLateLoadMode = Natives.isLateLoadMode,
+                    runtimeModeResolved = Natives.version > 0,
+                )
+            }
             return
         }
         if (_uiState.value.isKPatchNextOperationRunning) return
@@ -1261,6 +1279,8 @@ class SettingsViewModel(
                     .getOrDefault(false)
                 runCatching { refreshKPatchNextStatus() }
                     .onFailure { Log.e(TAG, "Failed to refresh KPatch Next status", it) }
+                runCatching { refreshKpmCaps() }
+                    .onFailure { Log.e(TAG, "Failed to refresh KPM capabilities", it) }
                 KernelStatusEvents.requestRefresh()
                 withContext(Dispatchers.Main) {
                     val message = when {
@@ -1326,6 +1346,21 @@ class SettingsViewModel(
                 isKPatchNextUnresolved = status.unresolved,
                 kPatchNextVersion = status.version,
                 kPatchNextConflict = status.conflict,
+            )
+        }
+    }
+
+    private suspend fun refreshKpmCaps() {
+        val caps = repo.getKpmCaps()
+        if (caps.error.isNotBlank()) {
+            Log.w(TAG, "KPM capabilities are unavailable: ${caps.error}")
+            return
+        }
+        _uiState.update {
+            it.copy(
+                kpmBackend = caps.backend,
+                isKpmManagementAvailable = caps.managementAvailable,
+                isKpmCapabilityResolved = true,
             )
         }
     }

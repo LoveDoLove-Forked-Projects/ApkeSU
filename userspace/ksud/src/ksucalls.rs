@@ -3,6 +3,7 @@ use anyhow::{Result, bail};
 
 use crate::ksu_uapi;
 use std::cell::Cell;
+use std::ffi::CString;
 use std::fs;
 use std::io;
 use std::mem;
@@ -360,6 +361,327 @@ pub fn is_late_load() -> bool {
 
 pub fn is_lkm_mode() -> bool {
     get_info().flags & ksu_uapi::KSU_GET_INFO_FLAG_LKM != 0
+}
+
+fn unsupported_ioctl(error: &io::Error) -> bool {
+    matches!(
+        error.raw_os_error(),
+        Some(code) if code == libc::ENOTTY || code == libc::EOPNOTSUPP || code == libc::ENOSYS
+    )
+}
+
+fn negative_errno(error: &io::Error) -> i32 {
+    error
+        .raw_os_error()
+        .and_then(i32::checked_neg)
+        .unwrap_or(-libc::EIO)
+}
+
+fn nul_terminated_string(buffer: &[u8], label: &str) -> io::Result<String> {
+    let end = buffer.iter().position(|byte| *byte == 0).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("{label} is not NUL terminated"),
+        )
+    })?;
+    Ok(String::from_utf8_lossy(&buffer[..end]).trim().to_string())
+}
+
+fn legacy_native_kpm_enabled() -> bool {
+    if is_late_load() || is_lkm_mode() {
+        return false;
+    }
+    let mut cmd = ksu_uapi::ksu_enable_kpm_cmd { enabled: 0 };
+    ksuctl(ksu_uapi::KSU_IOCTL_ENABLE_KPM, &raw mut cmd).is_ok_and(|_| cmd.enabled != 0)
+}
+
+pub fn is_native_kpm() -> bool {
+    let info = get_info();
+    !is_lkm_mode()
+        && !is_late_load()
+        && (info.flags & ksu_uapi::KSU_GET_INFO_FLAG_NATIVE_KPM != 0 || legacy_native_kpm_enabled())
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct NativeKpmCaps {
+    pub abi_version: u32,
+    pub backend: u32,
+    pub capabilities: u32,
+    pub max_image_size: u32,
+    pub max_loaded: u32,
+    pub max_name_len: u32,
+    pub max_args_len: u32,
+    pub probe_error: i32,
+    pub loader_ready: bool,
+    pub late_load: bool,
+}
+
+const MAX_NATIVE_KPM_COUNT: i32 = 64;
+
+pub fn get_native_kpm_caps() -> io::Result<NativeKpmCaps> {
+    if !is_native_kpm() {
+        return Ok(NativeKpmCaps {
+            abi_version: 0,
+            backend: ksu_uapi::KSU_KPM_BACKEND_NONE,
+            capabilities: 0,
+            max_image_size: 0,
+            max_loaded: 0,
+            max_name_len: 0,
+            max_args_len: 0,
+            probe_error: -libc::EOPNOTSUPP,
+            loader_ready: false,
+            late_load: is_late_load(),
+        });
+    }
+
+    let mut cmd = ksu_uapi::ksu_kpm_caps_cmd {
+        abi_version: 0,
+        backend: ksu_uapi::KSU_KPM_BACKEND_NONE,
+        capabilities: 0,
+        max_image_size: 0,
+        max_loaded: 0,
+        max_name_len: 0,
+        max_args_len: 0,
+        probe_error: -libc::EOPNOTSUPP,
+        loader_ready: 0,
+        late_load: 0,
+        reserved: [0; 2],
+    };
+    match ksuctl(ksu_uapi::KSU_IOCTL_GET_KPM_CAPS, &raw mut cmd) {
+        Ok(_) => {
+            if cmd.backend != ksu_uapi::KSU_KPM_BACKEND_NATIVE_GKI {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "kernel returned an unknown KPM backend",
+                ));
+            }
+            Ok(NativeKpmCaps {
+                abi_version: cmd.abi_version,
+                backend: cmd.backend,
+                capabilities: cmd.capabilities,
+                max_image_size: cmd.max_image_size,
+                max_loaded: cmd.max_loaded,
+                max_name_len: cmd.max_name_len,
+                max_args_len: cmd.max_args_len,
+                probe_error: cmd.probe_error,
+                loader_ready: cmd.loader_ready != 0,
+                late_load: cmd.late_load != 0,
+            })
+        }
+        Err(error) if unsupported_ioctl(&error) => {
+            // Older SukiSU kernels expose only ENABLE_KPM and the operation
+            // ioctl. Probe the version operation before advertising controls.
+            let mut enabled = ksu_uapi::ksu_enable_kpm_cmd { enabled: 0 };
+            ksuctl(ksu_uapi::KSU_IOCTL_ENABLE_KPM, &raw mut enabled)?;
+            if enabled.enabled == 0 {
+                return Ok(NativeKpmCaps {
+                    abi_version: 0,
+                    backend: ksu_uapi::KSU_KPM_BACKEND_NONE,
+                    capabilities: 0,
+                    max_image_size: 0,
+                    max_loaded: 0,
+                    max_name_len: 0,
+                    max_args_len: 0,
+                    probe_error: -libc::EOPNOTSUPP,
+                    loader_ready: false,
+                    late_load: is_late_load(),
+                });
+            }
+            match native_kpm_probe() {
+                Ok(_) => Ok(NativeKpmCaps {
+                    abi_version: 1,
+                    backend: ksu_uapi::KSU_KPM_BACKEND_NATIVE_GKI,
+                    capabilities: ksu_uapi::KSU_KPM_CAP_ABI
+                        | ksu_uapi::KSU_KPM_CAP_LOAD
+                        | ksu_uapi::KSU_KPM_CAP_UNLOAD
+                        | ksu_uapi::KSU_KPM_CAP_LIST
+                        | ksu_uapi::KSU_KPM_CAP_CONTROL
+                        | ksu_uapi::KSU_KPM_CAP_INFO
+                        | ksu_uapi::KSU_KPM_CAP_VERSION,
+                    max_image_size: 4 * 1024 * 1024,
+                    max_loaded: 64,
+                    max_name_len: 31,
+                    max_args_len: 1023,
+                    probe_error: 0,
+                    loader_ready: true,
+                    late_load: false,
+                }),
+                Err(probe_error) => Ok(NativeKpmCaps {
+                    abi_version: 1,
+                    backend: ksu_uapi::KSU_KPM_BACKEND_NATIVE_GKI,
+                    capabilities: ksu_uapi::KSU_KPM_CAP_ABI,
+                    max_image_size: 4 * 1024 * 1024,
+                    max_loaded: 64,
+                    max_name_len: 31,
+                    max_args_len: 1023,
+                    probe_error: negative_errno(&probe_error),
+                    loader_ready: false,
+                    late_load: is_late_load(),
+                }),
+            }
+        }
+        Err(error) => Err(error),
+    }
+}
+
+fn native_kpm_call(control_code: u32, arg1: u64, arg2: u64) -> io::Result<i32> {
+    if !(ksu_uapi::SUKISU_KPM_LOAD..=ksu_uapi::SUKISU_KPM_VERSION).contains(&control_code) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "unsupported Native KPM control code",
+        ));
+    }
+    let mut result = -libc::EOPNOTSUPP;
+    let mut cmd = ksu_uapi::ksu_kpm_cmd {
+        control_code: u64::from(control_code),
+        arg1,
+        arg2,
+        result_code: (&raw mut result) as u64,
+    };
+    ksuctl(ksu_uapi::KSU_IOCTL_KPM, &raw mut cmd)?;
+    if result < 0 {
+        let errno = result.checked_neg().unwrap_or(libc::EIO);
+        Err(io::Error::from_raw_os_error(errno))
+    } else {
+        Ok(result)
+    }
+}
+
+pub fn native_kpm_probe() -> io::Result<String> {
+    let mut version = vec![0u8; 256];
+    let result = native_kpm_call(
+        ksu_uapi::SUKISU_KPM_VERSION,
+        version.as_mut_ptr() as u64,
+        version.len() as u64,
+    )?;
+    if result != 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "native KPM version returned an invalid result",
+        ));
+    }
+    let text = nul_terminated_string(&version, "native KPM version")?;
+    if text.is_empty() {
+        return Err(io::Error::from_raw_os_error(libc::EOPNOTSUPP));
+    }
+    Ok(text)
+}
+
+pub fn native_kpm_load(path: &str, args: &str) -> io::Result<()> {
+    if path.is_empty() || path.len() >= 256 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Native KPM path is too long",
+        ));
+    }
+    if args.len() > 1023 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Native KPM arguments are too long",
+        ));
+    }
+    let path = CString::new(path)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "KPM path contains NUL"))?;
+    let args = CString::new(args)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "KPM arguments contain NUL"))?;
+    native_kpm_call(
+        ksu_uapi::SUKISU_KPM_LOAD,
+        path.as_ptr() as u64,
+        args.as_ptr() as u64,
+    )?;
+    Ok(())
+}
+
+pub fn native_kpm_unload(name: &str) -> io::Result<()> {
+    if name.is_empty() || name.len() > 31 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Native KPM name is invalid",
+        ));
+    }
+    let name = CString::new(name)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "KPM name contains NUL"))?;
+    native_kpm_call(ksu_uapi::SUKISU_KPM_UNLOAD, name.as_ptr() as u64, 0)?;
+    Ok(())
+}
+
+pub fn native_kpm_num() -> io::Result<i32> {
+    let count = native_kpm_call(ksu_uapi::SUKISU_KPM_NUM, 0, 0)?;
+    if !(0..=MAX_NATIVE_KPM_COUNT).contains(&count) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "native KPM count is outside the advertised limit",
+        ));
+    }
+    Ok(count)
+}
+
+pub fn native_kpm_list() -> io::Result<String> {
+    let mut buffer = vec![0u8; 4096];
+    let result = native_kpm_call(
+        ksu_uapi::SUKISU_KPM_LIST,
+        buffer.as_mut_ptr() as u64,
+        buffer.len() as u64,
+    )?;
+    let used = usize::try_from(result).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "native KPM list length is invalid",
+        )
+    })?;
+    if used > buffer.len() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "native KPM list is larger than its buffer",
+        ));
+    }
+    let end = buffer[..used]
+        .iter()
+        .position(|byte| *byte == 0)
+        .unwrap_or(used);
+    Ok(String::from_utf8_lossy(&buffer[..end]).into_owned())
+}
+
+pub fn native_kpm_info(name: &str) -> io::Result<String> {
+    if name.is_empty() || name.len() > 31 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Native KPM name is invalid",
+        ));
+    }
+    let name = CString::new(name)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "KPM name contains NUL"))?;
+    let mut buffer = vec![0u8; 256];
+    let result = native_kpm_call(
+        ksu_uapi::SUKISU_KPM_INFO,
+        name.as_ptr() as u64,
+        buffer.as_mut_ptr() as u64,
+    )?;
+    crate::kpm_abi::parse_info_output(&buffer, result)
+}
+
+pub fn native_kpm_control(name: &str, args: &str) -> io::Result<i32> {
+    if name.is_empty() || name.len() > 31 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Native KPM name is invalid",
+        ));
+    }
+    if args.len() > 1023 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Native KPM arguments are too long",
+        ));
+    }
+    let name = CString::new(name)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "KPM name contains NUL"))?;
+    let args = CString::new(args)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "KPM arguments contain NUL"))?;
+    native_kpm_call(
+        ksu_uapi::SUKISU_KPM_CONTROL,
+        name.as_ptr() as u64,
+        args.as_ptr() as u64,
+    )
 }
 
 pub fn is_uapi_version_mismatch() -> bool {

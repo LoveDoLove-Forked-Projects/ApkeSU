@@ -944,6 +944,15 @@ private fun RescueDiagnosticsPage(
                 if (status.pendingBoot) R.string.rescue_value_yes else R.string.rescue_value_no
             ),
         )
+        StatusLine(
+            rescueText(R.string.rescue_status_restore_validation),
+            when {
+                !status.restorePendingBoot -> rescueText(R.string.rescue_value_no)
+                status.restoreBootState == "interrupted" ->
+                    rescueText(R.string.rescue_restore_validation_interrupted)
+                else -> rescueText(R.string.rescue_restore_validation_pending)
+            },
+        )
         StatusLine(rescueText(R.string.rescue_status_failure_count), status.bootCount.toString())
         StatusLine(
             rescueText(R.string.rescue_status_restore_attempts),

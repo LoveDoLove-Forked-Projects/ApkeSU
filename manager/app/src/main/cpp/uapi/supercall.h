@@ -6,7 +6,8 @@
 
 #include "uapi/app_profile.h"
 // 2: allowlist v4 root profile flags
-static const __u32 KERNEL_SU_UAPI_VERSION = 2;
+// Native-GKI KPM uses optional extension ioctls and does not change the base ABI.
+static const __u32 KERNEL_SU_UAPI_VERSION = 4;
 
 /* Magic numbers for reboot hook to install fd */
 static const __u32 KSU_INSTALL_MAGIC1 = 0xDEADBEEF;
@@ -24,6 +25,8 @@ static const __u32 KSU_GET_INFO_FLAG_LKM = (1U << 0);
 static const __u32 KSU_GET_INFO_FLAG_MANAGER = (1U << 1);
 static const __u32 KSU_GET_INFO_FLAG_LATE_LOAD = (1U << 2);
 static const __u32 KSU_GET_INFO_FLAG_PR_BUILD = (1U << 3);
+static const __u32 KSU_GET_INFO_FLAG_BUNDLED = (1U << 4);
+static const __u32 KSU_GET_INFO_FLAG_NATIVE_KPM = (1U << 5);
 
 struct ksu_get_info_cmd {
     __u32 version; /* Output: KERNEL_SU_VERSION */
@@ -36,6 +39,32 @@ struct ksu_get_info_legacy_cmd {
     __u32 version; /* Output: KERNEL_SU_VERSION */
     __u32 flags; /* Output: KSU_GET_INFO_FLAG_* bits */
     __u32 features; /* Output: max feature ID supported */
+};
+
+static const __u32 KSU_KPM_BACKEND_NONE = 0;
+static const __u32 KSU_KPM_BACKEND_NATIVE_GKI = 1;
+static const __u32 KSU_KPM_BACKEND_KPATCH_NEXT = 2;
+
+static const __u32 KSU_KPM_CAP_ABI = (1U << 0);
+static const __u32 KSU_KPM_CAP_LOAD = (1U << 1);
+static const __u32 KSU_KPM_CAP_UNLOAD = (1U << 2);
+static const __u32 KSU_KPM_CAP_LIST = (1U << 3);
+static const __u32 KSU_KPM_CAP_CONTROL = (1U << 4);
+static const __u32 KSU_KPM_CAP_INFO = (1U << 5);
+static const __u32 KSU_KPM_CAP_VERSION = (1U << 6);
+
+struct ksu_kpm_caps_cmd {
+    __u32 abi_version;
+    __u32 backend;
+    __u32 capabilities;
+    __u32 max_image_size;
+    __u32 max_loaded;
+    __u32 max_name_len;
+    __u32 max_args_len;
+    __s32 probe_error;
+    __u8 loader_ready;
+    __u8 late_load;
+    __u8 reserved[2];
 };
 
 struct ksu_report_event_cmd {
@@ -169,6 +198,26 @@ struct ksu_get_sulog_fd_cmd {
     __u32 flags; /* Input: reserved for future use, must be 0 */
 };
 
+struct ksu_enable_kpm_cmd {
+    __u8 enabled; /* Output: CONFIG_KPM is enabled for this kernel */
+};
+
+static const __u32 SUKISU_KPM_LOAD = 1;
+static const __u32 SUKISU_KPM_UNLOAD = 2;
+static const __u32 SUKISU_KPM_NUM = 3;
+static const __u32 SUKISU_KPM_LIST = 4;
+static const __u32 SUKISU_KPM_INFO = 5;
+static const __u32 SUKISU_KPM_CONTROL = 6;
+static const __u32 SUKISU_KPM_VERSION = 7;
+static const __u32 SUKISU_KPM_CONTROL_MAX = 10;
+
+struct ksu_kpm_cmd {
+    __aligned_u64 control_code;
+    __aligned_u64 arg1;
+    __aligned_u64 arg2;
+    __aligned_u64 result_code;
+};
+
 static const __u8 KSU_UMOUNT_WIPE = 0; /* ignore everything and wipe list */
 static const __u8 KSU_UMOUNT_ADD = 1; /* add entry (path + flags) */
 static const __u8 KSU_UMOUNT_DEL = 2; /* delete entry, strcmp */
@@ -203,6 +252,9 @@ static const __u32 KSU_IOCTL_GET_SULOG_FD = _IOW('K', 20, struct ksu_get_sulog_f
 static const __u32 KSU_IOCTL_DISABLE_ESCAPE_TO_ROOT = _IO('K', 21);
 static const __u32 KSU_IOCTL_SET_MANAGER_APPID = _IOW('K', 22, struct ksu_set_manager_appid_cmd);
 /* Downstream extensions. 100-102 and 104 are reserved by existing integrations. */
+static const __u32 KSU_IOCTL_ENABLE_KPM = _IOC(_IOC_READ, 'K', 102, 0);
 static const __u32 KSU_IOCTL_DYNAMIC_MANAGER = _IOC(_IOC_READ | _IOC_WRITE, 'K', 103, 0);
 static const __u32 KSU_IOCTL_GET_MANAGERS = _IOC(_IOC_READ | _IOC_WRITE, 'K', 105, 0);
+static const __u32 KSU_IOCTL_GET_KPM_CAPS = _IOC(_IOC_READ | _IOC_WRITE, 'K', 106, 0);
+static const __u32 KSU_IOCTL_KPM = _IOC(_IOC_READ | _IOC_WRITE, 'K', 200, 0);
 #endif

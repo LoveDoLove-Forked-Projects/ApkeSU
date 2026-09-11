@@ -1,0 +1,32 @@
+{
+  "name": "KernelPatch KPM runtime",
+  "upstream": "https://github.com/ShirkNeko/SukiSU_KernelPatch_patch.git",
+  "commit": "c5f0785dc7fac22a846eecc6392f34198d8e18b5",
+  "source_date_epoch": 1779534332,
+  "license": "GPL-2.0-or-later",
+  "purpose": "ApkeSU GKI Native KPM early-boot runtime and kptools image patcher",
+  "import_policy": {
+    "local_hardening": [
+      "strict sukisu_kpm_* hook argument counts and fail-closed readiness",
+      "bounded KPM list/info output with balanced RCU unlocks"
+    ],
+    "excluded_sources": [
+      "kernel/patch/common/user_event.c",
+      "kernel/patch/android/userd.c"
+    ],
+    "excluded_artifacts": [
+      "*.o",
+      "*.elf",
+      "kpimg",
+      "kpimg-test",
+      "kptools",
+      "patch/encrypt"
+    ],
+    "preset_sync": "tools/preset.h is copied from kernel/include/preset.h so the host patcher uses the same map layout as kpimg"
+  },
+  "runtime_contract": {
+    "target": "AArch64 Android GKI boot kernel Image",
+    "entry_flow": "kptools patches the kernel entry; kpimg resolves early kernel symbols, hooks the ApkeSU Native KPM ABI, then returns to the original entry",
+    "lkm_mode": "not used; LKM continues to use the existing KPatch-Next path"
+  }
+}
