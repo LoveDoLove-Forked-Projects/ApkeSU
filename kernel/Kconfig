@@ -31,6 +31,17 @@ config KSU_NATIVE_KPM
 	help
 	  Deprecated compatibility symbol. Use CONFIG_KPM instead.
 
+config ABK_CONTROL
+	tristate "Enable ABK control interface and manager compatibility"
+	depends on KSU
+	default y
+	help
+	  Add the ABK control ABI to the KernelSU supercall interface and trust
+	  the configured ABK manager package and certificate. The feature does
+	  not create a user-visible device node; callers use the existing
+	  KernelSU supercall file descriptor. Disable this option when the ABK
+	  manager must not be trusted by a kernel build.
+
 config KSU_DEBUG
 	bool "KernelSU debug mode"
 	depends on KSU

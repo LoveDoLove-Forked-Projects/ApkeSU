@@ -1151,6 +1151,8 @@ fun MainScreen(
     val pixelStyle = LocalPixelStyle.current
     val systemAnimationsEnabled = rememberSystemAnimationsEnabled()
     val refreshTick by KernelStatusEvents.refreshTick.collectAsStateWithLifecycle()
+    val kpmDisableTick by KernelStatusEvents.kpmDisableTick.collectAsStateWithLifecycle()
+    val kpmEnableTick by KernelStatusEvents.kpmEnableTick.collectAsStateWithLifecycle()
     val pagerState = mainPagerState.pagerState
     val fullFeaturedResult by produceState<Boolean?>(initialValue = null, refreshTick) {
         // Keep the last confirmed value while the refresh probe is running. Writing
@@ -1249,6 +1251,21 @@ fun MainScreen(
     }
     LaunchedEffect(kpmPageActiveResult) {
         mainPagerState.updateKpmAvailability(kpmPageActiveResult.asBooleanOrNull())
+    }
+    LaunchedEffect(kpmDisableTick) {
+        if (kpmDisableTick > 0) {
+            // An explicit user disable is authoritative. Do not wait for the
+            // background probe's two-sample debounce to remove the page.
+            mainPagerState.markKpmExplicitlyDisabled()
+        }
+    }
+    LaunchedEffect(kpmEnableTick) {
+        if (kpmEnableTick > 0) {
+            // Only a successful enable operation may reopen the probe gate.
+            // The refresh requested with this event will then confirm the
+            // backend before adding the destination again.
+            mainPagerState.clearKpmExplicitDisable()
+        }
     }
 
     MainScreenBackHandler(mainPagerState, navController)

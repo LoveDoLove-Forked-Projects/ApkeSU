@@ -134,11 +134,11 @@ class SettingsFeatureAvailabilityTest {
     }
 
     @Test
-    fun kpatchNextSwitchRepresentsInstallLifecycle() {
+    fun kpatchNextSwitchRepresentsEffectiveLifecycle() {
         assertTrue(
             SettingsUiState(
                 isKPatchNextInstalled = true,
-                isKPatchNextEnabled = false,
+                isKPatchNextEnabled = true,
             ).isKPatchNextSwitchChecked
         )
         assertTrue(
@@ -150,6 +150,12 @@ class SettingsFeatureAvailabilityTest {
             SettingsUiState(
                 isKPatchNextInstalled = true,
                 isKPatchNextPendingRemove = true,
+            ).isKPatchNextSwitchChecked
+        )
+        assertFalse(
+            SettingsUiState(
+                isKPatchNextInstalled = true,
+                isKPatchNextEnabled = false,
             ).isKPatchNextSwitchChecked
         )
     }

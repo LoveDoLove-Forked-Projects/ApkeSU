@@ -396,6 +396,17 @@ fun SettingPagerSkrootpro(
                     onCheckedChange = actions.onSetShowGkiWarning,
                 )
                 SkrootproSwitchRow(
+                    title = stringResource(R.string.web_manager_auto_start),
+                    summary = stringResource(R.string.web_manager_auto_start_summary),
+                    checked = uiState.webManagerAutoStart,
+                    onCheckedChange = actions.onSetWebManagerAutoStart,
+                )
+                SkrootproActionRow(
+                    title = stringResource(R.string.web_manager_open),
+                    summary = stringResource(R.string.web_manager_open_summary),
+                    onClick = actions.onOpenWebManager,
+                )
+                SkrootproSwitchRow(
                     title = stringResource(R.string.enable_web_debugging),
                     checked = uiState.enableWebDebugging,
                     onCheckedChange = actions.onSetEnableWebDebugging,

@@ -24,6 +24,8 @@ import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.compose.dropUnlessResumed
 import androidx.lifecycle.viewmodel.compose.viewModel
+import android.widget.Toast
+import me.weishu.kernelsu.R
 import me.weishu.kernelsu.ui.InterfaceStyle
 import me.weishu.kernelsu.ui.navigation3.Navigator
 import me.weishu.kernelsu.ui.navigation3.Route
@@ -36,6 +38,7 @@ import me.weishu.kernelsu.ui.util.takePersistableImageReadPermission
 import me.weishu.kernelsu.ui.util.takePersistableVideoBackgroundReadPermission
 import me.weishu.kernelsu.ui.viewmodel.SettingsViewModel
 import me.weishu.kernelsu.ui.webui.WebUIActivity
+import me.weishu.kernelsu.ui.webmanager.WebManagerService
 
 @Composable
 fun SettingPager(
@@ -228,6 +231,16 @@ fun SettingPager(
         onOpenImageTool = { navigator.push(Route.ImageTool) },
         onSetEpkesuHideEnabled = viewModel::setEpkesuHideEnabled,
         onSetEnableWebDebugging = viewModel::setEnableWebDebugging,
+        onSetWebManagerAutoStart = viewModel::setWebManagerAutoStart,
+        onOpenWebManager = {
+            WebManagerService.openInBrowser(context).onFailure { error ->
+                Toast.makeText(
+                    context,
+                    context.getString(R.string.web_manager_open_failed, error.message ?: "unknown error"),
+                    Toast.LENGTH_LONG,
+                ).show()
+            }
+        },
         onSetAutoJailbreak = viewModel::setAutoJailbreak,
         onSetUseSoftReboot = viewModel::setUseSoftReboot,
         onSetDeltaColorVariant = viewModel::setDeltaColorVariant,

@@ -5,6 +5,9 @@
 #include <linux/uaccess.h>
 #include <linux/version.h>
 #include <linux/thread_info.h>
+#if IS_ENABLED(CONFIG_ABK_CONTROL)
+#include <linux/abk_control.h>
+#endif
 #include "uapi/supercall.h"
 #include "supercall/internal.h"
 #include "arch.h" // IWYU pragma: keep
@@ -47,6 +50,11 @@ static int do_get_info(void __user *arg)
 {
     struct ksu_get_info_cmd cmd = { .version = KERNEL_SU_VERSION, .flags = 0 };
 
+#if IS_ENABLED(CONFIG_ABK_CONTROL)
+    if (!is_manager())
+        abk_try_register_manager();
+#endif
+
 #ifdef CONFIG_KPM
 #ifndef MODULE
     cmd.flags |= KSU_GET_INFO_FLAG_NATIVE_KPM;
@@ -83,6 +91,11 @@ static int do_get_info(void __user *arg)
 static int do_get_info_legacy(void __user *arg)
 {
     struct ksu_get_info_legacy_cmd cmd = { .version = KERNEL_SU_VERSION, .flags = 0 };
+
+#if IS_ENABLED(CONFIG_ABK_CONTROL)
+    if (!is_manager())
+        abk_try_register_manager();
+#endif
 
 #ifdef CONFIG_KPM
 #ifndef MODULE
@@ -843,6 +856,58 @@ static int do_get_kpm_caps(void __user *arg)
     return 0;
 }
 
+#if IS_ENABLED(CONFIG_ABK_CONTROL)
+static int do_abk_control_get_status(void __user *arg)
+{
+    struct abk_control_status_cmd cmd;
+    char *json = NULL;
+    size_t json_len = 0;
+    u64 user_capacity;
+    int ret;
+
+    if (copy_from_user(&cmd, arg, sizeof(cmd)))
+        return -EFAULT;
+
+    user_capacity = cmd.data_len;
+    ret = abk_control_get_status_json(&json, &json_len);
+    if (ret)
+        return ret;
+
+    cmd.data_len = json_len;
+    ret = -ENOSPC;
+    if (cmd.data && user_capacity >= json_len) {
+        if (copy_to_user((void __user *)(unsigned long)cmd.data,
+                         json, json_len))
+            ret = -EFAULT;
+        else
+            ret = 0;
+    }
+
+    if (copy_to_user(arg, &cmd, sizeof(cmd)))
+        ret = -EFAULT;
+    kfree(json);
+    return ret;
+}
+
+static int do_abk_control_run_command(void __user *arg)
+{
+    struct abk_control_command_cmd cmd;
+    char command[ABK_CONTROL_MAX_COMMAND + 1];
+
+    if (copy_from_user(&cmd, arg, sizeof(cmd)))
+        return -EFAULT;
+    if (!cmd.command || !cmd.command_len ||
+        cmd.command_len > ABK_CONTROL_MAX_COMMAND)
+        return -EINVAL;
+    if (copy_from_user(command, (void __user *)(unsigned long)cmd.command,
+                       cmd.command_len))
+        return -EFAULT;
+    command[cmd.command_len] = '\0';
+
+    return abk_control_run_command(command, cmd.command_len);
+}
+#endif
+
 // IOCTL handlers mapping table
 // clang-format off
 static const struct ksu_ioctl_cmd_map ksu_ioctl_handlers[] = {
@@ -1027,6 +1092,20 @@ static const struct ksu_ioctl_cmd_map ksu_ioctl_handlers[] = {
         .cmd = KSU_IOCTL_KPM,
         .name = "KPM_OPERATION",
         .handler = do_kpm,
+        .perm_check = manager_or_root
+    },
+#endif
+#if IS_ENABLED(CONFIG_ABK_CONTROL)
+    {
+        .cmd = ABK_CONTROL_IOCTL_GET_STATUS,
+        .name = "ABK_CONTROL_GET_STATUS",
+        .handler = do_abk_control_get_status,
+        .perm_check = manager_or_root
+    },
+    {
+        .cmd = ABK_CONTROL_IOCTL_RUN_COMMAND,
+        .name = "ABK_CONTROL_RUN_COMMAND",
+        .handler = do_abk_control_run_command,
         .perm_check = manager_or_root
     },
 #endif

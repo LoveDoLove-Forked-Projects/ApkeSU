@@ -82,6 +82,8 @@ internal object SettingsCatalog {
         entry("version_warning", SettingsCategory.AppAndMaintenance, R.string.settings_version_mismatch_warning, R.string.settings_version_mismatch_warning_summary),
         entry("gki_warning", SettingsCategory.AppAndMaintenance, R.string.settings_gki_warning, R.string.settings_gki_warning_summary),
         entry("web_debugging", SettingsCategory.AppAndMaintenance, R.string.enable_web_debugging, R.string.enable_web_debugging_summary),
+        entry("web_manager_auto_start", SettingsCategory.AppAndMaintenance, R.string.web_manager_auto_start, R.string.web_manager_auto_start_summary),
+        entry("web_manager_open", SettingsCategory.AppAndMaintenance, R.string.web_manager_open, R.string.web_manager_open_summary),
         entry("auto_jailbreak", SettingsCategory.AppAndMaintenance, R.string.settings_auto_jailbreak, R.string.settings_auto_jailbreak_summary),
         entry("uninstall", SettingsCategory.AppAndMaintenance, R.string.settings_uninstall) { it.isLkmMode },
         entry("send_log", SettingsCategory.AppAndMaintenance, R.string.send_log),

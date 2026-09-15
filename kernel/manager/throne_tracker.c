@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0
 #include <linux/err.h>
 #include <linux/fs.h>
+#include <linux/jiffies.h>
 #include <linux/kernel.h>
 #include <linux/list.h>
 #include <linux/moduleparam.h>
@@ -30,6 +31,10 @@ static DEFINE_SPINLOCK(throne_request_lock);
 static unsigned int throne_pending_flags;
 static bool throne_scan_pending;
 static bool throne_scan_queued;
+#if IS_ENABLED(CONFIG_ABK_CONTROL)
+static DEFINE_SPINLOCK(abk_registration_lock);
+static unsigned long abk_last_registration_attempt;
+#endif
 
 struct uid_data {
     struct list_head list;
@@ -532,6 +537,38 @@ void __init ksu_throne_tracker_init(void)
                 ksu_manager_appid_param);
     }
 }
+
+#if IS_ENABLED(CONFIG_ABK_CONTROL)
+void abk_try_register_manager(void)
+{
+    struct file *file;
+    unsigned long flags;
+    unsigned long now = jiffies;
+
+    /* A primary manager may already be registered; the scan must still
+     * discover and publish the ABK manager as an additional entry. */
+    if (is_manager())
+        return;
+
+    spin_lock_irqsave(&abk_registration_lock, flags);
+    if (abk_last_registration_attempt &&
+        time_before(now, abk_last_registration_attempt + 5 * HZ)) {
+        spin_unlock_irqrestore(&abk_registration_lock, flags);
+        return;
+    }
+    abk_last_registration_attempt = now;
+    spin_unlock_irqrestore(&abk_registration_lock, flags);
+
+    /* GET_INFO may be called before packages.list is ready. */
+    file = filp_open(SYSTEM_PACKAGES_LIST_PATH, O_RDONLY | O_NOFOLLOW, 0);
+    if (IS_ERR(file))
+        return;
+    filp_close(file, NULL);
+
+    /* Scanning is deferred to init's task context and coalesced by tracker. */
+    track_throne(TRACK_THRONE_FORCE_SEARCH_MGR);
+}
+#endif
 
 void __exit ksu_throne_tracker_exit(void)
 {

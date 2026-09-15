@@ -67,6 +67,7 @@ class MainPagerState(
     private var pendingRestoredDestination: MainDestination? = restoredDestination
     private var fullFeaturedUnavailableObservations = 0
     private var kpmInactiveObservations = 0
+    private var kpmExplicitlyDisabled = false
 
     fun animateToPage(targetIndex: Int) {
         if (targetIndex !in 0 until pagerState.pageCount) return
@@ -146,9 +147,23 @@ class MainPagerState(
         }
     }
 
-    fun updateKpmAvailability(available: Boolean?) {
+    fun markKpmExplicitlyDisabled() {
+        kpmExplicitlyDisabled = true
+        kpmInactiveObservations = 0
+        updateKpmAvailability(false, bypassInactiveHysteresis = true)
+    }
+
+    fun clearKpmExplicitDisable() {
+        kpmExplicitlyDisabled = false
+        kpmInactiveObservations = 0
+    }
+
+    fun updateKpmAvailability(available: Boolean?, bypassInactiveHysteresis: Boolean = false) {
         val resolvedAvailability = available ?: return
         if (resolvedAvailability) {
+            // A probe started before an explicit disable may finish after it.
+            // Do not let that stale result resurrect the KPM destination.
+            if (!shouldAcceptKpmAvailability(resolvedAvailability, kpmExplicitlyDisabled)) return
             kpmInactiveObservations = 0
         } else {
             if (!kpmActive) return
@@ -156,8 +171,10 @@ class MainPagerState(
             // KPatch-Next status is read through a root shell and can return a
             // transient incomplete result during boot or module refresh. Keep
             // the committed KPM destination until two probes agree it is gone.
-            kpmInactiveObservations++
-            if (kpmInactiveObservations < 2) return
+            if (!bypassInactiveHysteresis) {
+                kpmInactiveObservations++
+                if (kpmInactiveObservations < 2) return
+            }
             kpmInactiveObservations = 0
         }
         if (kpmActive == resolvedAvailability) return
@@ -284,6 +301,11 @@ internal fun shouldResetMainPagerForFeatureAvailability(
         else -> false
     }
 }
+
+internal fun shouldAcceptKpmAvailability(
+    available: Boolean,
+    explicitlyDisabled: Boolean,
+): Boolean = !available || !explicitlyDisabled
 
 @Composable
 fun rememberMainPagerState(

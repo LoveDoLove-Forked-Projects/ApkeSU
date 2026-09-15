@@ -50,11 +50,15 @@ pub fn print_status() {
         .get("versionCode")
         .map_or(MODULE_VERSION_CODE_FALLBACK, String::as_str);
     let installed = module_dir.join("module.prop").exists();
-    let pending_update = update_dir.join("module.prop").exists();
+    // A disabled pending copy must not make the Manager render the switch as
+    // enabled. `pendingUpdate` describes an update that will actually be
+    // activated on the next boot.
+    let pending_update = has_enabled_pending_update(&update_dir);
     let pending_remove = module_dir.join(defs::REMOVE_FILE_NAME).exists()
         || update_dir.join(defs::REMOVE_FILE_NAME).exists();
-    let enabled =
-        installed && !module_dir.join(defs::DISABLE_FILE_NAME).exists() && !pending_remove;
+    let enabled = is_module_enabled(&module_dir)
+        && !update_dir.join(defs::DISABLE_FILE_NAME).exists()
+        && !pending_remove;
     let webui = module_dir
         .join(defs::MODULE_WEB_DIR)
         .join("index.html")
@@ -143,31 +147,28 @@ pub fn is_enabled() -> bool {
         return false;
     }
     let module_dir = module_dir();
-    module_dir.join("module.prop").exists()
-        && !module_dir.join(defs::DISABLE_FILE_NAME).exists()
-        && !module_dir.join(defs::REMOVE_FILE_NAME).exists()
+    let update_dir = update_dir();
+    is_module_enabled(&module_dir)
+        && !update_dir.join(defs::DISABLE_FILE_NAME).exists()
+        && !update_dir.join(defs::REMOVE_FILE_NAME).exists()
 }
 
 pub fn disable() -> Result<()> {
     ensure_kpatch_mode()?;
     let module_dir = module_dir();
     let update_dir = update_dir();
-    for dir in [&module_dir, &update_dir] {
-        if dir.is_symlink() {
-            bail!("{} is a symlink, refusing to remove it", dir.display());
-        }
-    }
-    // A fresh installation lives only in modules_update and has never owned
-    // this boot's KPatch runtime. Requiring `kpatch hello` in that state makes
-    // it impossible to cancel an installation before the first reboot. Once
-    // an active module exists, keep the fail-closed runtime handoff so loaded
-    // KPMs cannot be orphaned in the kernel.
-    if active_module_may_own_runtime(&module_dir) {
-        crate::kpm::stop_kpatch_runtime()?;
-    }
-    let active_touched = ensure_remove_marker_if_dir_exists(&module_dir)?;
-    let update_touched = ensure_remove_marker_if_dir_exists(&update_dir)?;
+    let active_module_may_own_runtime = module_dir.join("module.prop").is_file();
+    // Persist the disable marker before touching the live runtime. This is the
+    // fail-closed boundary: even if KPatch is unhealthy or a live KPM cannot be
+    // unloaded, the module service will not run on the next boot.
+    let (active_touched, update_touched) = persist_disabled_state(&module_dir, &update_dir)?;
     let touched = active_touched || update_touched;
+
+    if active_module_may_own_runtime && let Err(error) = crate::kpm::stop_kpatch_runtime() {
+        log::warn!(
+            "KPatch runtime could not be stopped while disabling the module; persistent disable will take effect after reboot: {error:#}"
+        );
+    }
 
     if touched && let Err(e) = module::regenerate_preinit_rc() {
         log::warn!("regenerate preinit rc failed: {e}");
@@ -175,8 +176,39 @@ pub fn disable() -> Result<()> {
     Ok(())
 }
 
-fn active_module_may_own_runtime(module_dir: &Path) -> bool {
-    module_dir.join("module.prop").is_file()
+fn persist_disabled_state(module_dir: &Path, update_dir: &Path) -> Result<(bool, bool)> {
+    for dir in [module_dir, update_dir] {
+        if dir.is_symlink() {
+            bail!(
+                "{} is a symlink, refusing to update its state",
+                dir.display()
+            );
+        }
+    }
+    let active_touched = ensure_disable_marker_if_dir_exists(module_dir)?;
+    let update_touched = ensure_disable_marker_if_dir_exists(update_dir)?;
+    Ok((active_touched, update_touched))
+}
+
+fn is_module_enabled(dir: &Path) -> bool {
+    dir.join("module.prop").is_file()
+        && !dir.join(defs::DISABLE_FILE_NAME).exists()
+        && !dir.join(defs::REMOVE_FILE_NAME).exists()
+}
+
+fn has_enabled_pending_update(dir: &Path) -> bool {
+    dir.join("module.prop").is_file()
+        && !dir.join(defs::DISABLE_FILE_NAME).exists()
+        && !dir.join(defs::REMOVE_FILE_NAME).exists()
+}
+
+fn ensure_disable_marker_if_dir_exists(dir: &Path) -> Result<bool> {
+    if !dir.exists() {
+        return Ok(false);
+    }
+    remove_marker_if_exists(&dir.join(defs::REMOVE_FILE_NAME))?;
+    utils::ensure_file_exists(dir.join(defs::DISABLE_FILE_NAME))?;
+    Ok(true)
 }
 
 fn ensure_kpatch_mode() -> Result<()> {
@@ -337,14 +369,6 @@ fn write_builtin_zip() -> Result<PathBuf> {
     Ok(zip_path)
 }
 
-fn ensure_remove_marker_if_dir_exists(dir: &Path) -> Result<bool> {
-    if !dir.exists() {
-        return Ok(false);
-    }
-    utils::ensure_file_exists(dir.join(defs::REMOVE_FILE_NAME))?;
-    Ok(true)
-}
-
 fn remove_marker_if_exists(path: &Path) -> Result<()> {
     if path.exists() {
         fs::remove_file(path).with_context(|| format!("failed to remove {}", path.display()))?;
@@ -363,16 +387,63 @@ fn cleanup_partial_module_dir(module_dir: &Path, had_module_prop: bool) {
 
 #[cfg(test)]
 mod tests {
-    use super::active_module_may_own_runtime;
+    use super::{has_enabled_pending_update, is_module_enabled, persist_disabled_state};
     use std::fs;
     use tempfile::tempdir;
 
     #[test]
-    fn pending_install_does_not_claim_the_current_runtime() {
+    fn disabled_module_does_not_claim_an_enabled_runtime() {
         let root = tempdir().unwrap();
-        assert!(!active_module_may_own_runtime(root.path()));
+        assert!(!is_module_enabled(root.path()));
 
         fs::write(root.path().join("module.prop"), "id=KPatch-Next\n").unwrap();
-        assert!(active_module_may_own_runtime(root.path()));
+        assert!(is_module_enabled(root.path()));
+
+        fs::write(root.path().join("disable"), "").unwrap();
+        assert!(!is_module_enabled(root.path()));
+    }
+
+    #[test]
+    fn disabling_active_and_pending_modules_is_idempotent() {
+        let root = tempdir().unwrap();
+        let active = root.path().join("active");
+        let update = root.path().join("update");
+        fs::create_dir_all(&active).unwrap();
+        fs::create_dir_all(&update).unwrap();
+        fs::write(active.join("module.prop"), "id=KPatch-Next\n").unwrap();
+        fs::write(update.join("module.prop"), "id=KPatch-Next\n").unwrap();
+        fs::write(active.join("remove"), "").unwrap();
+        fs::write(update.join("remove"), "").unwrap();
+
+        assert_eq!(
+            persist_disabled_state(&active, &update).unwrap(),
+            (true, true)
+        );
+        assert!(active.join("disable").is_file());
+        assert!(update.join("disable").is_file());
+        assert!(!active.join("remove").exists());
+        assert!(!update.join("remove").exists());
+        assert!(!is_module_enabled(&active));
+
+        assert_eq!(
+            persist_disabled_state(&active, &update).unwrap(),
+            (true, true)
+        );
+    }
+
+    #[test]
+    fn disabled_pending_update_is_not_reported_as_enabled() {
+        let root = tempdir().unwrap();
+        let update = root.path().join("update");
+        fs::create_dir_all(&update).unwrap();
+        fs::write(update.join("module.prop"), "id=KPatch-Next\n").unwrap();
+        assert!(has_enabled_pending_update(&update));
+
+        fs::write(update.join("disable"), "").unwrap();
+        assert!(!has_enabled_pending_update(&update));
+
+        fs::remove_file(update.join("disable")).unwrap();
+        fs::write(update.join("remove"), "").unwrap();
+        assert!(!has_enabled_pending_update(&update));
     }
 }

@@ -20,6 +20,21 @@ static LIST_HEAD(ksu_manager_appid_list);
 static DEFINE_SPINLOCK(ksu_manager_list_lock);
 static uid_t primary_manager_appid = KSU_INVALID_APPID;
 
+/* Prefer the built-in manager, but keep a usable appid for ABK-only builds. */
+static uid_t preferred_manager_from_list(struct list_head *head)
+{
+    struct ksu_manager_node *node;
+    uid_t first = KSU_INVALID_APPID;
+
+    list_for_each_entry(node, head, list) {
+        if (first == KSU_INVALID_APPID)
+            first = node->appid;
+        if (node->signature_index == KSU_SIGNATURE_INDEX_PRIMARY)
+            return node->appid;
+    }
+    return first;
+}
+
 static struct ksu_manager_node *alloc_manager_node(uid_t uid, u8 signature_index, gfp_t flags)
 {
     struct ksu_manager_node *node;
@@ -65,8 +80,20 @@ bool is_manager(void)
 
 bool is_primary_manager(void)
 {
-    return unlikely(READ_ONCE(primary_manager_appid) ==
-                    ksu_normalize_appid(current_uid().val));
+    struct ksu_manager_node *node;
+    uid_t appid = ksu_normalize_appid(current_uid().val);
+    bool primary = false;
+
+    rcu_read_lock();
+    list_for_each_entry_rcu(node, &ksu_manager_appid_list, list) {
+        if (node->appid == appid &&
+            node->signature_index == KSU_SIGNATURE_INDEX_PRIMARY) {
+            primary = true;
+            break;
+        }
+    }
+    rcu_read_unlock();
+    return primary;
 }
 
 bool is_uid_manager(uid_t uid)
@@ -102,8 +129,8 @@ void ksu_register_manager(uid_t uid, u8 signature_index)
         }
     }
     list_add_tail_rcu(&node->list, &ksu_manager_appid_list);
-    if (signature_index == KSU_SIGNATURE_INDEX_PRIMARY)
-        WRITE_ONCE(primary_manager_appid, node->appid);
+    WRITE_ONCE(primary_manager_appid,
+               preferred_manager_from_list(&ksu_manager_appid_list));
     spin_unlock_irqrestore(&ksu_manager_list_lock, flags);
 }
 
@@ -117,11 +144,11 @@ void ksu_unregister_manager(uid_t uid)
     list_for_each_entry_safe(node, next, &ksu_manager_appid_list, list) {
         if (node->appid != appid)
             continue;
-        if (node->signature_index == KSU_SIGNATURE_INDEX_PRIMARY)
-            WRITE_ONCE(primary_manager_appid, KSU_INVALID_APPID);
         list_del_rcu(&node->list);
         kfree_rcu(node, rcu);
     }
+    WRITE_ONCE(primary_manager_appid,
+               preferred_manager_from_list(&ksu_manager_appid_list));
     spin_unlock_irqrestore(&ksu_manager_list_lock, flags);
 }
 
@@ -134,11 +161,11 @@ void ksu_unregister_manager_by_signature_index(u8 signature_index)
     list_for_each_entry_safe(node, next, &ksu_manager_appid_list, list) {
         if (node->signature_index != signature_index)
             continue;
-        if (signature_index == KSU_SIGNATURE_INDEX_PRIMARY)
-            WRITE_ONCE(primary_manager_appid, KSU_INVALID_APPID);
         list_del_rcu(&node->list);
         kfree_rcu(node, rcu);
     }
+    WRITE_ONCE(primary_manager_appid,
+               preferred_manager_from_list(&ksu_manager_appid_list));
     spin_unlock_irqrestore(&ksu_manager_list_lock, flags);
 }
 
@@ -182,7 +209,6 @@ int ksu_replace_managers(const struct ksu_manager_entry *entries, u16 count)
 {
     LIST_HEAD(replacement);
     struct ksu_manager_node *node, *next, *existing;
-    uid_t next_primary = KSU_INVALID_APPID;
     unsigned long flags;
     u16 index;
 
@@ -206,8 +232,6 @@ int ksu_replace_managers(const struct ksu_manager_entry *entries, u16 count)
             kfree(node);
             continue;
         }
-        if (node->signature_index == KSU_SIGNATURE_INDEX_PRIMARY)
-            next_primary = node->appid;
         list_add_tail(&node->list, &replacement);
     }
 
@@ -220,7 +244,8 @@ int ksu_replace_managers(const struct ksu_manager_entry *entries, u16 count)
         list_del(&node->list);
         list_add_tail_rcu(&node->list, &ksu_manager_appid_list);
     }
-    WRITE_ONCE(primary_manager_appid, next_primary);
+    WRITE_ONCE(primary_manager_appid,
+               preferred_manager_from_list(&ksu_manager_appid_list));
     spin_unlock_irqrestore(&ksu_manager_list_lock, flags);
     return 0;
 

@@ -121,6 +121,7 @@ data class SettingsUiState(
     val customBackgroundMusicVolume: Float = DEFAULT_CUSTOM_BACKGROUND_MUSIC_VOLUME,
     val customNavigationIcons: CustomNavigationIconSet = CustomNavigationIconSet(),
     val deltaColorVariant: String = DeltaColorVariant.DEFAULT_VALUE,
+    val webManagerAutoStart: Boolean = false,
 
     // Su Compat
     val suCompatStatus: String = "",
@@ -283,6 +284,8 @@ data class SettingsScreenActions(
     val onOpenImageTool: () -> Unit,
     val onSetEpkesuHideEnabled: (Boolean) -> Unit,
     val onSetEnableWebDebugging: (Boolean) -> Unit,
+    val onSetWebManagerAutoStart: (Boolean) -> Unit,
+    val onOpenWebManager: () -> Unit,
     val onSetAutoJailbreak: (Boolean) -> Unit,
     val onSetUseSoftReboot: (Boolean) -> Unit,
     val onSetDeltaColorVariant: (String) -> Unit,

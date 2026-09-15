@@ -39,6 +39,7 @@ Native GKI KPM 接口的来源、兼容范围、SukiSU-Ultra 参考提交、Kern
 
 - **动态管理器**：保留 ApkeSU 内置主管理器，同时允许用户为一个已安装且兼容的管理器授予副管理器权限。身份同时绑定包名、App ID、APK v2 证书大小和证书 SHA-256，并在软件包变化后由内核重新校验。该功能授予完整 Root 管理权限，使用前请阅读[动态管理器安全与使用说明](./docs/DYNAMIC_MANAGER.md)。
 - **Native GKI KPM 接口**：在满足 GKI、AArch64、`CONFIG_KSU=y` 和 `CONFIG_KPM=y` 时提供 SukiSU 兼容的 KPM ABI；LKM 模式继续使用独立的 KPatch-Next 后端。该功能不是 SukiSU-Ultra 官方发行版，使用前请阅读 [KPM 声明](./docs/SUKISU_KPM_NOTICE.md)。
+- **ABK Control 兼容桥**：在启用 `CONFIG_ABK_CONTROL` 时，通过现有 supercall fd 提供公开的 ABK 状态/命令 ABI，并以包名、证书大小和 SHA-256 同时校验 ABK 管理器。GKI 和 LKM 构建都支持该桥，LKM 外部构建默认随 `CONFIG_KSU` 继承，也可显式关闭。实现边界和构建开关见 [ABK Control 说明](./docs/ABK_CONTROL.md)。
 
 ## 上游项目信息
 

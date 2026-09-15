@@ -46,7 +46,12 @@ class SuperUserRepositoryImpl : SuperUserRepository {
                 Log.w(TAG, "root package query failed, falling back to current user", it)
             }.getOrNull()
 
-            if (rootResult != null && rootResult.first.any { !it.special }) {
+            // A root service can return only the manager package when package enumeration is
+            // restricted. Treat that as an incomplete result so the local full-package fallback
+            // can populate the superuser page instead of returning an empty list after filtering.
+            if (rootResult != null && rootResult.first.any { app ->
+                    !app.special && app.packageName != ksuApp.packageName
+                }) {
                 return@runCatching rootResult
             }
 

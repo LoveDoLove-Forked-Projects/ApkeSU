@@ -55,6 +55,17 @@ kernelsu-objs += feature/adb_root.o
 kernelsu-objs += feature/selinux_hide.o
 kernelsu-objs += feature/avc_spoof.o
 
+ifeq ($(CONFIG_ABK_CONTROL),)
+ifneq ($(filter y m,$(CONFIG_KSU)),)
+CONFIG_ABK_CONTROL := $(CONFIG_KSU)
+endif
+endif
+
+ifneq ($(filter y m,$(CONFIG_ABK_CONTROL)),)
+kernelsu-objs += abk_control/core.o
+kernelsu-objs += abk_control/manifest.o
+endif
+
 ifeq ($(CONFIG_KPM),y)
 ifneq ($(CONFIG_KSU),y)
 $(error CONFIG_KPM requires built-in CONFIG_KSU=y)
@@ -197,6 +208,35 @@ $(info -- KernelSU Manager signature hash2: $(KSU_EXPECTED_HASH2))
 endif
 
 ccflags-y += -DKSU_NEW_DCACHE_FLUSH=$(KSU_NEW_DCACHE_FLUSH)
+
+ifneq ($(filter y m,$(CONFIG_ABK_CONTROL)),)
+ifndef ABK_MANAGER_PACKAGE
+ABK_MANAGER_PACKAGE := com.abk.kernel
+endif
+ifndef ABK_MANAGER_CERT_SIZE
+ABK_MANAGER_CERT_SIZE := 1407
+endif
+ifndef ABK_MANAGER_CERT_SHA256
+ABK_MANAGER_CERT_SHA256 := 34e5e843952277759603cd0f949770b24c868530d80d7baeff08776a7e132b16
+endif
+ifndef ABK_MANAGER_CERT_MAX_LENGTH
+ABK_MANAGER_CERT_MAX_LENGTH := 2048
+endif
+
+ccflags-y += -DABK_MANAGER_PACKAGE=\"$(ABK_MANAGER_PACKAGE)\"
+ccflags-y += -DABK_MANAGER_CERT_SIZE=$(ABK_MANAGER_CERT_SIZE)
+ccflags-y += -DABK_MANAGER_CERT_SHA256=\"$(ABK_MANAGER_CERT_SHA256)\"
+ccflags-y += -DABK_MANAGER_CERT_MAX_LENGTH=$(ABK_MANAGER_CERT_MAX_LENGTH)
+ccflags-y += -DABK_MANAGER_OFFICIAL_CERT=1
+ifneq ($(KBUILD_EXTMOD),)
+# External LKM builds do not run this tree's Kconfig, so expose the
+# tristate to the preprocessor after inheriting CONFIG_KSU above.
+ccflags-y += -DCONFIG_ABK_CONTROL=1
+endif
+$(info -- ABK manager package name: $(ABK_MANAGER_PACKAGE))
+$(info -- ABK manager certificate size: $(ABK_MANAGER_CERT_SIZE))
+$(info -- ABK manager certificate hash: $(ABK_MANAGER_CERT_SHA256))
+endif
 
 ccflags-y += -Wno-strict-prototypes -Wno-int-conversion -Wno-gcc-compat -Wno-missing-prototypes
 ccflags-y += -Wno-declaration-after-statement -Wno-unused-function

@@ -6,5 +6,6 @@
 #include "uapi/feature.h"
 #include "uapi/selinux.h"
 #include "uapi/sulog.h"
+#include "uapi/abk_control.h"
 
 #endif // __KSU_UAPI_KSU_H

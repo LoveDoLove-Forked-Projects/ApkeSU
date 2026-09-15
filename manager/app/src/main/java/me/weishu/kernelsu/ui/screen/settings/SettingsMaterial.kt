@@ -529,6 +529,23 @@ fun SettingPagerMaterial(
                         },
                         {
                             SegmentedSwitchItem(
+                                icon = Icons.Rounded.Language,
+                                title = stringResource(R.string.web_manager_auto_start),
+                                summary = stringResource(R.string.web_manager_auto_start_summary),
+                                checked = uiState.webManagerAutoStart,
+                                onCheckedChange = actions.onSetWebManagerAutoStart,
+                            )
+                        },
+                        {
+                            MaterialSettingsLink(
+                                title = stringResource(R.string.web_manager_open),
+                                summary = stringResource(R.string.web_manager_open_summary),
+                                icon = Icons.Rounded.Language,
+                                onClick = actions.onOpenWebManager,
+                            )
+                        },
+                        {
+                            SegmentedSwitchItem(
                                 icon = Icons.Filled.DeveloperMode,
                                 title = stringResource(R.string.enable_web_debugging),
                                 summary = stringResource(R.string.enable_web_debugging_summary),

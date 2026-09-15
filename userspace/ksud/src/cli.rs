@@ -627,7 +627,7 @@ enum KpatchNext {
     /// Install or enable built-in KPatch Next
     Enable,
 
-    /// Uninstall built-in KPatch Next on the next boot
+    /// Disable built-in KPatch Next until it is enabled again
     Disable,
 }
 

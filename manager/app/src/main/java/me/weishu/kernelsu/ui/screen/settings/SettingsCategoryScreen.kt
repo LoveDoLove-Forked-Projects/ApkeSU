@@ -1,6 +1,7 @@
 package me.weishu.kernelsu.ui.screen.settings
 
 import android.content.Intent
+import android.widget.Toast
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -114,6 +115,7 @@ import me.weishu.kernelsu.ui.theme.immersiveSurfaceColor
 import me.weishu.kernelsu.ui.util.KPATCH_NEXT_MODULE_ID
 import me.weishu.kernelsu.ui.viewmodel.SettingsViewModel
 import me.weishu.kernelsu.ui.webui.WebUIActivity
+import me.weishu.kernelsu.ui.webmanager.WebManagerService
 
 @Composable
 fun SettingsCategoryScreen(routeValue: String) {
@@ -218,6 +220,16 @@ fun SettingsCategoryScreen(routeValue: String) {
                 onSetAutoJailbreak = viewModel::setAutoJailbreak,
                 onSendLog = { showSendLogDialog = true },
                 onUninstall = { showUninstallDialog = true },
+                onSetWebManagerAutoStart = viewModel::setWebManagerAutoStart,
+                onOpenWebManager = {
+                    WebManagerService.openInBrowser(context).onFailure { error ->
+                        Toast.makeText(
+                            context,
+                            context.getString(R.string.web_manager_open_failed, error.message ?: "unknown error"),
+                            Toast.LENGTH_LONG,
+                        ).show()
+                    }
+                },
                 onOpen = navigator::push,
             )
         }
@@ -726,6 +738,8 @@ private fun AppMaintenanceSettingsContent(
     onSetAutoJailbreak: (Boolean) -> Unit,
     onSendLog: () -> Unit,
     onUninstall: () -> Unit,
+    onSetWebManagerAutoStart: (Boolean) -> Unit,
+    onOpenWebManager: () -> Unit,
     onOpen: (Route) -> Unit,
 ) {
     SettingsGroup(stringResource(R.string.settings_group_general)) {
@@ -784,6 +798,22 @@ private fun AppMaintenanceSettingsContent(
             enabled = uiState.isLateLoadMode,
             checked = uiState.autoJailbreak,
             onCheckedChange = onSetAutoJailbreak,
+        )
+    }
+    SettingsGroup(stringResource(R.string.settings_group_web_manager)) {
+        SettingsSwitchRow(
+            title = stringResource(R.string.web_manager_auto_start),
+            summary = stringResource(R.string.web_manager_auto_start_summary),
+            icon = Icons.Rounded.Language,
+            checked = uiState.webManagerAutoStart,
+            onCheckedChange = onSetWebManagerAutoStart,
+        )
+        SettingsDivider()
+        SettingsActionRow(
+            title = stringResource(R.string.web_manager_open),
+            summary = stringResource(R.string.web_manager_open_summary),
+            icon = Icons.Rounded.Language,
+            onClick = onOpenWebManager,
         )
     }
     SettingsGroup(stringResource(R.string.settings_group_maintenance_about)) {

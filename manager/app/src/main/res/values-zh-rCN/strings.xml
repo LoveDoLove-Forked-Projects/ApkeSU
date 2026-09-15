@@ -218,6 +218,7 @@
     <string name="settings_kpatch_next_conflict_summary">检测到 %s，已禁用此入口。</string>
     <string name="settings_kpatch_next_pending_update_summary">KPatch Next 将在重启后更新。</string>
     <string name="settings_kpatch_next_pending_remove_summary">KPatch Next 已标记为移除。</string>
+    <string name="settings_kpatch_next_disabled_summary">KPatch Next 已关闭，重启后生效，模块数据会保留。</string>
     <string name="settings_kpatch_next_unresolved_summary">上次启动时 KPatch 未响应；如果设备不稳定，请先停用它。</string>
     <string name="settings_kpatch_next_webui">KPatch Next WebUI</string>
     <string name="settings_kpatch_next_webui_summary">打开 KPatch Next WebUI 管理 KPM 包和排除规则。</string>
@@ -226,7 +227,7 @@
     <string name="settings_kpatch_next_failed">更新 KPatch Next 失败。</string>
     <string name="settings_kpatch_next_operation_running">正在更新 KPatch Next 模块，请稍候。</string>
     <string name="settings_kpatch_next_install_scheduled">KPatch Next 已安装，重启后启用模块。</string>
-    <string name="settings_kpatch_next_uninstall_scheduled">KPatch Next 已标记卸载，重启后移除模块。</string>
+    <string name="settings_kpatch_next_uninstall_scheduled">KPatch Next 已关闭，重启后生效。</string>
     <string name="settings_kpatch_next_jailbreak_disabled_summary">越狱模式没有持久化模块生命周期，KPatch Next 已自动禁用。</string>
     <string name="kpm_title">KPM 管理</string>
     <string name="kpm_short_title">KPM</string>
@@ -370,6 +371,14 @@
     <string name="app_unfreeze_batch_success">已解冻 %1$d/%2$d 个应用</string>
     <string name="enable_web_debugging">WebView 调试</string>
     <string name="enable_web_debugging_summary">可用于调试 WebUI，请仅在需要时启用</string>
+    <string name="settings_group_web_manager">网页管理器</string>
+    <string name="web_manager_auto_start">网页端口自动启动</string>
+    <string name="web_manager_auto_start_summary">开机后自动启动网页管理器服务（端口 10240）</string>
+    <string name="web_manager_open">启动网页管理器</string>
+    <string name="web_manager_open_summary">在浏览器中打开网页管理器页面</string>
+    <string name="web_manager_notification_title">网页管理器服务运行中</string>
+    <string name="web_manager_notification_text">监听 127.0.0.1:10240</string>
+    <string name="web_manager_open_failed">无法打开网页管理器：%1$s</string>
     <string name="direct_install">直接安装（推荐）</string>
     <string name="direct_install_root_required">使用直接安装前，请先给 ApkeSU 授予 Root 权限。</string>
     <string name="select_file">选择文件并修补</string>

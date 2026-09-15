@@ -183,7 +183,11 @@ static bool check_block(struct file *fp, loff_t *pos, loff_t block_end,
     if (certificate_size > INT_MAX || certificate_size > (u64)(certificates_end - *pos))
         return false;
 
+#ifdef ABK_MANAGER_CERT_MAX_LENGTH
+#define CERT_MAX_LENGTH ABK_MANAGER_CERT_MAX_LENGTH
+#else
 #define CERT_MAX_LENGTH 0x1000
+#endif
     if (certificate_size < 0x100 || certificate_size > CERT_MAX_LENGTH) {
         pr_info("cert length overlimit\n");
         return false;
@@ -466,6 +470,11 @@ static int manager_signature_index(unsigned size, const char *sha256)
     if (size == EXPECTED_SIZE2 && !strcmp(sha256, EXPECTED_HASH2))
         return 1;
 #endif
+#ifdef ABK_MANAGER_OFFICIAL_CERT
+    if (size == ABK_MANAGER_CERT_SIZE &&
+        !strcmp(sha256, ABK_MANAGER_CERT_SHA256))
+        return KSU_SIGNATURE_INDEX_ABK_MANAGER;
+#endif
     if (ksu_dynamic_manager_matches(size, sha256))
         return KSU_SIGNATURE_INDEX_DYNAMIC_MANAGER;
     return -ENODATA;
@@ -485,7 +494,7 @@ bool is_manager_apk(char *path, u8 *signature_index)
     if (matched_index < 0)
         return false;
 
-#if defined(KSU_MANAGER_PACKAGE)
+#if defined(KSU_MANAGER_PACKAGE) || defined(ABK_MANAGER_PACKAGE)
     if (matched_index != KSU_SIGNATURE_INDEX_DYNAMIC_MANAGER) {
     char pkg[KSU_MAX_PACKAGE_NAME];
 
@@ -494,8 +503,20 @@ bool is_manager_apk(char *path, u8 *signature_index)
         return false;
     }
 
-    if (strcmp(pkg, KSU_MANAGER_PACKAGE) != 0) {
+    if (matched_index == KSU_SIGNATURE_INDEX_ABK_MANAGER) {
+#ifdef ABK_MANAGER_PACKAGE
+        if (strcmp(pkg, ABK_MANAGER_PACKAGE) != 0)
+            return false;
+#else
         return false;
+#endif
+    } else {
+#ifdef KSU_MANAGER_PACKAGE
+        if (strcmp(pkg, KSU_MANAGER_PACKAGE) != 0)
+            return false;
+#else
+        return false;
+#endif
     }
     }
 #endif

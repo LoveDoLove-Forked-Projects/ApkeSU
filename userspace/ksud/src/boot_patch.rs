@@ -1061,7 +1061,7 @@ pub fn patch(args: BootPatchArgs) -> Result<()> {
         if flash {
             // Direct install must not be blocked by rescue backup state. The
             // explicit rescue restore path keeps its verification gate.
-            println!("- Rescue verification skipped for direct install");
+            println!("- Direct install: rescue verification is not required");
             println!("- Flashing new boot image");
             let bootdevice = boot_image_file.display().to_string();
             flash_partition(&bootdevice, &new_boot_bytes)?;

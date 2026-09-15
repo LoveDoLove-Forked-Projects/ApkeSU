@@ -103,6 +103,7 @@ import me.weishu.kernelsu.ui.util.DEFAULT_CUSTOM_STARTUP_SOUND_DURATION_SECONDS
 import me.weishu.kernelsu.ui.util.LauncherIconOption
 import me.weishu.kernelsu.ui.util.applyLauncherIcon
 import me.weishu.kernelsu.ui.util.execKsud
+import me.weishu.kernelsu.ui.webmanager.WEB_MANAGER_AUTO_START_KEY
 import me.weishu.kernelsu.ui.util.getBuiltinMountStatus as readBuiltinMountStatus
 import me.weishu.kernelsu.ui.util.getFeaturePersistValue
 import me.weishu.kernelsu.ui.util.getFeatureStatus
@@ -571,6 +572,10 @@ class SettingsRepositoryImpl : SettingsRepository {
     override var enableWebDebugging: Boolean
         get() = prefs.getBoolean("enable_web_debugging", false)
         set(value) = prefs.edit { putBoolean("enable_web_debugging", value) }
+
+    override var webManagerAutoStart: Boolean
+        get() = prefs.getBoolean(WEB_MANAGER_AUTO_START_KEY, false)
+        set(value) = prefs.edit { putBoolean(WEB_MANAGER_AUTO_START_KEY, value) }
 
     override var deltaColorVariant: String
         get() = DeltaColorVariant.fromValue(

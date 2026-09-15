@@ -26,4 +26,18 @@ void ksu_throne_tracker_exit(void);
 void track_throne(unsigned int flags);
 #endif
 
+#if IS_ENABLED(CONFIG_ABK_CONTROL)
+#ifdef CONFIG_KSU_DISABLE_MANAGER
+static inline void abk_try_register_manager(void)
+{
+}
+#else
+void abk_try_register_manager(void);
+#endif
+#else
+static inline void abk_try_register_manager(void)
+{
+}
+#endif
+
 #endif

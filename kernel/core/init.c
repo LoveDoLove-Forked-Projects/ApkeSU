@@ -28,6 +28,9 @@
 #include "feature/avc_spoof.h"
 #include "feature/hook_status.h"
 #include "infra/symbol_resolver.h"
+#if IS_ENABLED(CONFIG_ABK_CONTROL)
+#include <linux/abk_control.h>
+#endif
 
 #if defined(__x86_64__) && !defined(CONFIG_KSU_X86_PATCH_SYSCALL_DISPATCHER)
 #include <asm/cpufeature.h>
@@ -206,6 +209,10 @@ void __exit kernelsu_exit(void)
     ksu_syscall_hook_manager_exit();
 
     ksu_supercalls_exit();
+
+#if IS_ENABLED(CONFIG_ABK_CONTROL)
+    abk_control_shutdown();
+#endif
 
     if (!ksu_late_loaded)
         ksu_ksud_exit();

@@ -332,6 +332,17 @@ fun SettingPagerDelta(
                     onCheckedChange = actions.onSetShowGkiWarning,
                 )
                 DeltaSwitchRow(
+                    title = stringResource(R.string.web_manager_auto_start),
+                    summary = stringResource(R.string.web_manager_auto_start_summary),
+                    checked = uiState.webManagerAutoStart,
+                    onCheckedChange = actions.onSetWebManagerAutoStart,
+                )
+                DeltaActionRow(
+                    title = stringResource(R.string.web_manager_open),
+                    summary = stringResource(R.string.web_manager_open_summary),
+                    onClick = actions.onOpenWebManager,
+                )
+                DeltaSwitchRow(
                     title = stringResource(R.string.enable_web_debugging),
                     summary = stringResource(R.string.enable_web_debugging_summary),
                     checked = uiState.enableWebDebugging,

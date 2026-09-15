@@ -750,6 +750,19 @@ fun SettingPagerMiuix(
                             )
                         }
                         CategorizedMiuixSwitchRow(
+                            title = stringResource(id = R.string.web_manager_auto_start),
+                            summary = stringResource(id = R.string.web_manager_auto_start_summary),
+                            icon = Icons.Rounded.Language,
+                            checked = uiState.webManagerAutoStart,
+                            onCheckedChange = actions.onSetWebManagerAutoStart,
+                        )
+                        CategorizedMiuixActionRow(
+                            title = stringResource(id = R.string.web_manager_open),
+                            summary = stringResource(id = R.string.web_manager_open_summary),
+                            icon = Icons.Rounded.Language,
+                            onClick = actions.onOpenWebManager,
+                        )
+                        CategorizedMiuixSwitchRow(
                             title = stringResource(id = R.string.enable_web_debugging),
                             summary = stringResource(id = R.string.enable_web_debugging_summary),
                             icon = Icons.Rounded.DeveloperMode,

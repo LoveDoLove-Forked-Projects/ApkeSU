@@ -20,6 +20,7 @@ import me.weishu.kernelsu.ui.util.CustomWallpaperCrop
 import me.weishu.kernelsu.ui.util.KPatchNextStatus
 import me.weishu.kernelsu.ui.util.KpmCaps
 import me.weishu.kernelsu.ui.util.StartupAnimationSettings
+import me.weishu.kernelsu.ui.webmanager.WEB_MANAGER_AUTO_START_KEY
 
 const val SHOW_VERSION_MISMATCH_WARNING_KEY = "show_version_mismatch_warning"
 const val SHOW_GKI_WARNING_KEY = "show_gki_warning"
@@ -87,6 +88,7 @@ interface SettingsRepository {
     var pageTransitionEffect: String
     var themeSyncStrategy: ThemeSyncStrategy
     var enableWebDebugging: Boolean
+    var webManagerAutoStart: Boolean
     var autoJailbreak: Boolean
     var useSoftReboot: Boolean
     var launcherIcon: String

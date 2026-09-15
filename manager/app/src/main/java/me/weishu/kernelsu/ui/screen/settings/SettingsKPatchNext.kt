@@ -32,7 +32,7 @@ internal val SettingsUiState.canOpenPathConfig: Boolean
     get() = pathConfigBackend == PathConfigBackend.PathmaskLkm || pathConfigBackend == PathConfigBackend.SusfsGki
 
 internal val SettingsUiState.isKPatchNextSwitchChecked: Boolean
-    get() = (isKPatchNextInstalled || isKPatchNextPendingUpdate) && !isKPatchNextPendingRemove
+    get() = (isKPatchNextEnabled || isKPatchNextPendingUpdate) && !isKPatchNextPendingRemove
 
 internal val SettingsUiState.canToggleKPatchNext: Boolean
     get() = runtimeModeResolved &&
@@ -82,6 +82,9 @@ internal fun kPatchNextSummary(uiState: SettingsUiState): String {
         uiState.isKPatchNextUnresolved -> stringResource(R.string.settings_kpatch_next_unresolved_summary)
         uiState.isKPatchNextPendingRemove -> stringResource(R.string.settings_kpatch_next_pending_remove_summary)
         uiState.isKPatchNextPendingUpdate -> stringResource(R.string.settings_kpatch_next_pending_update_summary)
+        uiState.isKPatchNextInstalled && !uiState.isKPatchNextEnabled -> stringResource(
+            R.string.settings_kpatch_next_disabled_summary
+        )
         uiState.isKPatchNextInstalled && uiState.kPatchNextVersion.isNotBlank() -> stringResource(
             R.string.settings_kpatch_next_installed_summary,
             uiState.kPatchNextVersion

@@ -324,6 +324,14 @@
     <string name="app_unfreeze_batch_success">Unfrozen %1$d of %2$d applications</string>
     <string name="enable_web_debugging">WebView debugging</string>
     <string name="enable_web_debugging_summary">Can be used to debug WebUI. Please enable only when needed.</string>
+    <string name="settings_group_web_manager">Web manager</string>
+    <string name="web_manager_auto_start">Web manager auto-start</string>
+    <string name="web_manager_auto_start_summary">Start the web manager service after boot (port 10240)</string>
+    <string name="web_manager_open">Launch web manager</string>
+    <string name="web_manager_open_summary">Open the web manager page in your browser</string>
+    <string name="web_manager_notification_title">Web manager running</string>
+    <string name="web_manager_notification_text">Available at 127.0.0.1:10240</string>
+    <string name="web_manager_open_failed">Unable to open web manager: %1$s</string>
     <string name="direct_install">Direct install (Recommended)</string>
     <string name="direct_install_root_required">Grant root access to ApkeSU before using direct install.</string>
     <string name="select_file">Select a file and patch</string>
@@ -705,6 +713,7 @@
     <string name="settings_kpatch_next_conflict_summary">Disabled because %s is present.</string>
     <string name="settings_kpatch_next_pending_update_summary">KPatch Next will be updated after reboot.</string>
     <string name="settings_kpatch_next_pending_remove_summary">KPatch Next is marked for removal.</string>
+    <string name="settings_kpatch_next_disabled_summary">KPatch Next is disabled. Restart to apply the change; its data is kept.</string>
     <string name="settings_kpatch_next_unresolved_summary">KPatch did not respond on last boot. Disable it if the device is unstable.</string>
     <string name="settings_kpatch_next_webui">KPatch Next WebUI</string>
     <string name="settings_kpatch_next_webui_summary">Open KPatch Next WebUI to manage KPM packages and exclude rules.</string>
@@ -713,7 +722,7 @@
     <string name="settings_kpatch_next_failed">Failed to update KPatch Next.</string>
     <string name="settings_kpatch_next_operation_running">Updating the KPatch Next module, please wait.</string>
     <string name="settings_kpatch_next_install_scheduled">KPatch Next was installed. Restart to activate the module.</string>
-    <string name="settings_kpatch_next_uninstall_scheduled">KPatch Next was marked for uninstall. Restart to remove the module.</string>
+    <string name="settings_kpatch_next_uninstall_scheduled">KPatch Next was disabled. Restart to apply the change.</string>
     <string name="settings_kpatch_next_jailbreak_disabled_summary">KPatch Next is disabled in jailbreak mode because its persistent module lifecycle is unavailable.</string>
     <string name="kpm_title">KPM management</string>
     <string name="kpm_short_title">KPM</string>

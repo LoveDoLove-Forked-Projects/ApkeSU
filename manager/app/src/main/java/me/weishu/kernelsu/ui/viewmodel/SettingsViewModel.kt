@@ -47,6 +47,7 @@ import me.weishu.kernelsu.ui.util.BUILTIN_MOUNT_VARIANT_FULL
 import me.weishu.kernelsu.ui.util.BUILTIN_MOUNT_VARIANT_LITE
 import me.weishu.kernelsu.ui.util.LauncherIconOption
 import me.weishu.kernelsu.ui.util.KernelStatusEvents
+import java.util.concurrent.atomic.AtomicLong
 
 class SettingsViewModel(
     private val repo: SettingsRepository = SettingsRepositoryImpl()
@@ -60,6 +61,9 @@ class SettingsViewModel(
     val uiState: StateFlow<SettingsUiState> = _uiState.asStateFlow()
     private var refreshJob: Job? = null
     private var uiDecorationSaveJob: Job? = null
+    // A status query can outlive the action that triggered it. Keep its
+    // generation separate so an older refresh cannot restore stale KPatch UI.
+    private val kPatchNextStateGeneration = AtomicLong(0L)
 
     init {
         refresh()
@@ -67,6 +71,7 @@ class SettingsViewModel(
 
     fun refresh() {
         refreshJob?.cancel()
+        val kPatchNextRefreshGeneration = kPatchNextStateGeneration.get()
         refreshJob = viewModelScope.launch(refreshExceptionHandler) {
             val checkModuleUpdate = repo.checkModuleUpdate
             val showVersionMismatchWarning = repo.showVersionMismatchWarning
@@ -114,6 +119,7 @@ class SettingsViewModel(
             val themeSyncStrategy = repo.themeSyncStrategy
             val customThemePresets = repo.getCustomThemePresets()
             val enableWebDebugging = repo.enableWebDebugging
+            val webManagerAutoStart = repo.webManagerAutoStart
             val launcherIcon = repo.launcherIcon
             val customManagerName = repo.customManagerName
             val customHomeTitle = repo.customHomeTitle
@@ -234,6 +240,7 @@ class SettingsViewModel(
                     themeSyncStrategy = themeSyncStrategy,
                     customThemePresets = customThemePresets,
                     enableWebDebugging = enableWebDebugging,
+                    webManagerAutoStart = webManagerAutoStart,
                     launcherIcon = launcherIcon,
                     customManagerName = customManagerName,
                     customHomeTitle = customHomeTitle,
@@ -290,42 +297,66 @@ class SettingsViewModel(
                     builtinMountCompatibility = builtinMountStatus.compatibility,
                     builtinMountLkmPurpose = builtinMountStatus.lkmPurpose,
                     builtinMountIsApkeSuRootDriver = builtinMountStatus.apkeSuRootDriver,
-                    isKPatchNextInstalled = if (kPatchNextStatus.error.isBlank()) {
+                    isKPatchNextInstalled = if (
+                        kPatchNextRefreshGeneration == kPatchNextStateGeneration.get() &&
+                        kPatchNextStatus.error.isBlank()
+                    ) {
                         kPatchNextStatus.installed
                     } else {
                         it.isKPatchNextInstalled
                     },
-                    isKPatchNextEnabled = if (kPatchNextStatus.error.isBlank()) {
+                    isKPatchNextEnabled = if (
+                        kPatchNextRefreshGeneration == kPatchNextStateGeneration.get() &&
+                        kPatchNextStatus.error.isBlank()
+                    ) {
                         kPatchNextStatus.enabled
                     } else {
                         it.isKPatchNextEnabled
                     },
-                    isKPatchNextPendingUpdate = if (kPatchNextStatus.error.isBlank()) {
+                    isKPatchNextPendingUpdate = if (
+                        kPatchNextRefreshGeneration == kPatchNextStateGeneration.get() &&
+                        kPatchNextStatus.error.isBlank()
+                    ) {
                         kPatchNextStatus.pendingUpdate
                     } else {
                         it.isKPatchNextPendingUpdate
                     },
-                    isKPatchNextPendingRemove = if (kPatchNextStatus.error.isBlank()) {
+                    isKPatchNextPendingRemove = if (
+                        kPatchNextRefreshGeneration == kPatchNextStateGeneration.get() &&
+                        kPatchNextStatus.error.isBlank()
+                    ) {
                         kPatchNextStatus.pendingRemove
                     } else {
                         it.isKPatchNextPendingRemove
                     },
-                    isKPatchNextWebUiAvailable = if (kPatchNextStatus.error.isBlank()) {
+                    isKPatchNextWebUiAvailable = if (
+                        kPatchNextRefreshGeneration == kPatchNextStateGeneration.get() &&
+                        kPatchNextStatus.error.isBlank()
+                    ) {
                         kPatchNextStatus.webUi
                     } else {
                         it.isKPatchNextWebUiAvailable
                     },
-                    isKPatchNextUnresolved = if (kPatchNextStatus.error.isBlank()) {
+                    isKPatchNextUnresolved = if (
+                        kPatchNextRefreshGeneration == kPatchNextStateGeneration.get() &&
+                        kPatchNextStatus.error.isBlank()
+                    ) {
                         kPatchNextStatus.unresolved
                     } else {
                         it.isKPatchNextUnresolved
                     },
-                    kPatchNextVersion = if (kPatchNextStatus.error.isBlank()) {
+                    kPatchNextVersion = if (
+                        kPatchNextRefreshGeneration == kPatchNextStateGeneration.get() &&
+                        kPatchNextStatus.error.isBlank()
+                    ) {
                         kPatchNextStatus.version
                     } else {
                         it.kPatchNextVersion
                     },
-                    kPatchNextConflict = if (kPatchNextStatus.error.isBlank()) {
+                    kPatchNextConflict = if (
+                        kPatchNextRefreshGeneration == kPatchNextStateGeneration.get() &&
+                        kPatchNextStatus.error.isBlank()
+                    ) {
                         kPatchNextStatus.conflict
                     } else {
                         it.kPatchNextConflict
@@ -1093,6 +1124,11 @@ class SettingsViewModel(
         _uiState.update { it.copy(enableWebDebugging = enabled) }
     }
 
+    fun setWebManagerAutoStart(enabled: Boolean) {
+        repo.webManagerAutoStart = enabled
+        _uiState.update { it.copy(webManagerAutoStart = enabled) }
+    }
+
     fun setSuCompatMode(mode: Int) {
         viewModelScope.launch(Dispatchers.IO) {
             when (mode) {
@@ -1271,17 +1307,42 @@ class SettingsViewModel(
         }
         if (_uiState.value.isKPatchNextOperationRunning) return
 
+        val operationGeneration = kPatchNextStateGeneration.incrementAndGet()
+        refreshJob?.cancel()
         _uiState.update { it.copy(isKPatchNextOperationRunning = true) }
         viewModelScope.launch(Dispatchers.IO) {
             try {
                 val success = runCatching { repo.setKPatchNextEnabled(enabled) }
                     .onFailure { Log.e(TAG, "KPatch Next operation failed", it) }
                     .getOrDefault(false)
-                runCatching { refreshKPatchNextStatus() }
+                if (success) {
+                    // Reflect the committed intent immediately. The following
+                    // status query replaces this projection with filesystem
+                    // state when the daemon is available.
+                    _uiState.update {
+                        if (operationGeneration != kPatchNextStateGeneration.get()) {
+                            it
+                        } else {
+                            it.copy(
+                                isKPatchNextEnabled = enabled,
+                                isKPatchNextPendingUpdate = false,
+                                isKPatchNextPendingRemove = false,
+                            )
+                        }
+                    }
+                    if (enabled) {
+                        KernelStatusEvents.requestKpmEnable()
+                    } else {
+                        KernelStatusEvents.requestKpmDisable()
+                    }
+                }
+                runCatching { refreshKPatchNextStatus(operationGeneration) }
                     .onFailure { Log.e(TAG, "Failed to refresh KPatch Next status", it) }
                 runCatching { refreshKpmCaps() }
                     .onFailure { Log.e(TAG, "Failed to refresh KPM capabilities", it) }
-                KernelStatusEvents.requestRefresh()
+                if (!success) {
+                    KernelStatusEvents.requestRefresh()
+                }
                 withContext(Dispatchers.Main) {
                     val message = when {
                         !success -> R.string.settings_kpatch_next_failed
@@ -1330,23 +1391,27 @@ class SettingsViewModel(
         }
     }
 
-    private suspend fun refreshKPatchNextStatus() {
+    private suspend fun refreshKPatchNextStatus(generation: Long? = null) {
         val status = repo.getKPatchNextStatus()
         if (status.error.isNotBlank()) {
             Log.w(TAG, "KPatch Next status is unavailable: ${status.error}")
             return
         }
         _uiState.update {
-            it.copy(
-                isKPatchNextInstalled = status.installed,
-                isKPatchNextEnabled = status.enabled,
-                isKPatchNextPendingUpdate = status.pendingUpdate,
-                isKPatchNextPendingRemove = status.pendingRemove,
-                isKPatchNextWebUiAvailable = status.webUi,
-                isKPatchNextUnresolved = status.unresolved,
-                kPatchNextVersion = status.version,
-                kPatchNextConflict = status.conflict,
-            )
+            if (generation != null && generation != kPatchNextStateGeneration.get()) {
+                it
+            } else {
+                it.copy(
+                    isKPatchNextInstalled = status.installed,
+                    isKPatchNextEnabled = status.enabled,
+                    isKPatchNextPendingUpdate = status.pendingUpdate,
+                    isKPatchNextPendingRemove = status.pendingRemove,
+                    isKPatchNextWebUiAvailable = status.webUi,
+                    isKPatchNextUnresolved = status.unresolved,
+                    kPatchNextVersion = status.version,
+                    kPatchNextConflict = status.conflict,
+                )
+            }
         }
     }
 

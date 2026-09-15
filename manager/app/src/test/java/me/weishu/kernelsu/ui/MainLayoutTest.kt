@@ -5,6 +5,7 @@ import me.weishu.kernelsu.ui.component.bottombar.MainDestination
 import me.weishu.kernelsu.ui.component.bottombar.labelFor
 import me.weishu.kernelsu.ui.component.bottombar.mainDestinations
 import me.weishu.kernelsu.ui.component.bottombar.stateFor
+import me.weishu.kernelsu.ui.component.bottombar.shouldAcceptKpmAvailability
 import me.weishu.kernelsu.ui.component.bottombar.shouldResetMainPagerForFeatureAvailability
 import me.weishu.kernelsu.ui.navigation3.Route
 import me.weishu.kernelsu.ui.util.CustomNavigationIconSet
@@ -153,6 +154,13 @@ class MainLayoutTest {
             KpmPageAvailability.Active,
             KpmPageAvailability.fromStatus(KPatchNextStatus(installed = true, enabled = true)),
         )
+    }
+
+    @Test
+    fun explicitKpmDisableRejectsLatePositiveProbeUntilReenabled() {
+        assertFalse(shouldAcceptKpmAvailability(available = true, explicitlyDisabled = true))
+        assertTrue(shouldAcceptKpmAvailability(available = false, explicitlyDisabled = true))
+        assertTrue(shouldAcceptKpmAvailability(available = true, explicitlyDisabled = false))
     }
 
     @Test
