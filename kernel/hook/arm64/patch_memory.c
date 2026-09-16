@@ -209,26 +209,61 @@ int ksu_patch_text(void *dst, void *src, size_t len, int flags)
  */
 void *scan_call_to(void *start, size_t size, void *target)
 {
-    const uint32_t *insn = (const uint32_t *)start;
-    size_t count = size / sizeof(uint32_t);
-    size_t i;
+    uintptr_t start_addr = (uintptr_t)start;
+    size_t offset;
 
-    for (i = 0; i < count; i++) {
-        int32_t imm26;
+    if (!start || !target || size < sizeof(u32))
+        return NULL;
+
+    /* Keep the scan aligned and reject an address range that wrapped. */
+    if ((start_addr & (sizeof(u32) - 1)) != 0)
+        return NULL;
+    size &= ~(sizeof(u32) - 1);
+    if (!size || size > (size_t)(~(uintptr_t)0 - start_addr))
+        return NULL;
+
+    for (offset = 0; offset < size; offset += sizeof(u32)) {
+        u32 instruction;
+        uintptr_t instruction_addr = start_addr + offset;
+        int64_t imm26;
         void *branch_target;
 
-        /* Check BL opcode: bits[31:26] == 0b100101 */
-        if ((insn[i] & 0xFC000000U) != 0x94000000U)
+        if (copy_from_kernel_nofault(&instruction, (void *)instruction_addr, sizeof(instruction)))
             continue;
 
-        /* Sign-extend the 26-bit immediate to 32 bits */
-        imm26 = (int32_t)((insn[i] & 0x03FFFFFFU) << 6) >> 6;
+        /* Check BL opcode: bits[31:26] == 0b100101. */
+        if ((instruction & 0xFC000000U) != 0x94000000U)
+            continue;
 
-        /* Branch target = PC + imm26 * 4 */
-        branch_target = (void *)((uintptr_t)(&insn[i]) + ((int64_t)imm26 << 2));
+        /* Sign-extend the 26-bit immediate before converting words to bytes. */
+        imm26 = instruction & 0x03FFFFFFU;
+        if (imm26 & (1LL << 25))
+            imm26 |= ~((1LL << 26) - 1);
+
+        /* Multiply instead of left-shifting a negative signed value. */
+        {
+            int64_t byte_delta = imm26 * (int64_t)sizeof(u32);
+            uintptr_t branch_addr;
+
+            if (byte_delta < 0) {
+                uintptr_t distance = (uintptr_t)(-byte_delta);
+
+                if (distance > instruction_addr)
+                    continue;
+                branch_addr = instruction_addr - distance;
+            } else {
+                uintptr_t distance = (uintptr_t)byte_delta;
+
+                if (distance > ~(uintptr_t)0 - instruction_addr)
+                    continue;
+                branch_addr = instruction_addr + distance;
+            }
+
+            branch_target = (void *)branch_addr;
+        }
 
         if (branch_target == target)
-            return (void *)&insn[i];
+            return (void *)instruction_addr;
     }
 
     return NULL;

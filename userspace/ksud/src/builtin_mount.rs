@@ -15,14 +15,15 @@ const CONFIG_PATH: &str = "/data/adb/hybrid-mount/config.toml";
 const BUILTIN_VARIANT_PATH: &str = "/data/adb/hybrid-mount/builtin_variant";
 const BUILTIN_LITE_ZIP: &[u8] = include_bytes!("../builtin/hybrid-mount-lite.zip");
 const BUILTIN_FULL_ZIP: &[u8] = include_bytes!("../builtin/hybrid-mount-full.zip");
-const MODULE_NAME_FALLBACK: &str = "Hybrid Mount Lite";
-const MODULE_VERSION_FALLBACK: &str = "4.2.0-1815";
-const MODULE_VERSION_CODE_FALLBACK: &str = "402000";
 const HYBRID_MOUNT_BINARY: &str = "hybrid-mount";
 const COMPAT_MARKER_FILE: &str = ".ksu_builtin_mount_compat";
-const SOURCE_URL: &str = "https://github.com/Hybrid-Mount/meta-hybrid_mount/releases/tag/v4.2.0";
-const KASUMI_LKM_PREFIX: &str = "kasumi_lkm/";
-const KASUMI_LKM_SUFFIX: &str = "_arm64_kasumi_lkm.ko";
+const LITE_SOURCE_URL: &str =
+    "https://github.com/Hybrid-Mount/meta-hybrid_mount/releases/tag/v4.2.0";
+const FULL_SOURCE_URL: &str =
+    "https://github.com/Hybrid-Mount/meta-hybrid_mount/releases/tag/v6.2.0";
+const LEGACY_KASUMI_LKM_PREFIX: &str = "kasumi_lkm/";
+const LEGACY_KASUMI_LKM_SUFFIX: &str = "_arm64_kasumi_lkm.ko";
+const CURRENT_LKM_PREFIX: &str = "lkm/binaries/";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum BuiltinMountVariant {
@@ -93,13 +94,13 @@ pub fn print_status() {
     let module_path = module_dir.display().to_string();
     let name = module_prop
         .get("name")
-        .map_or(MODULE_NAME_FALLBACK, String::as_str);
+        .map_or_else(|| fallback_module_name(variant), String::as_str);
     let version = module_prop
         .get("version")
-        .map_or(MODULE_VERSION_FALLBACK, String::as_str);
+        .map_or_else(|| fallback_module_version(variant), String::as_str);
     let version_code = module_prop
         .get("versionCode")
-        .map_or(MODULE_VERSION_CODE_FALLBACK, String::as_str);
+        .map_or_else(|| fallback_module_version_code(variant), String::as_str);
     let archive_info = read_archive_lkm_info(variant);
     let current_kmi = boot_patch::get_current_kmi().unwrap_or_default();
     let compatibility = match variant {
@@ -125,16 +126,55 @@ pub fn print_status() {
             "defaultMode": default_mode,
             "variant": variant.as_str(),
             "webui": webui,
-            "sourceUrl": SOURCE_URL,
+            "sourceUrl": source_url(variant),
             "archiveSha256": sha256::digest(variant.archive()),
             "lkmCount": archive_info.lkm_count,
             "supportedKmis": archive_info.supported_kmis,
             "currentKmi": current_kmi,
             "compatibility": compatibility,
-            "lkmPurpose": "Kasumi mount and concealment features",
+            "lkmPurpose": lkm_purpose(variant, archive_info.lkm_count),
             "apkesuRootDriver": false,
         })
     );
+}
+
+const fn fallback_module_name(variant: BuiltinMountVariant) -> &'static str {
+    match variant {
+        BuiltinMountVariant::Lite => "Hybrid Mount Lite",
+        BuiltinMountVariant::Full => "Hybrid Mount",
+    }
+}
+
+const fn fallback_module_version(variant: BuiltinMountVariant) -> &'static str {
+    match variant {
+        BuiltinMountVariant::Lite => "4.2.0-1815",
+        BuiltinMountVariant::Full => "6.2.0",
+    }
+}
+
+const fn fallback_module_version_code(variant: BuiltinMountVariant) -> &'static str {
+    match variant {
+        BuiltinMountVariant::Lite => "402000",
+        BuiltinMountVariant::Full => "602000",
+    }
+}
+
+const fn source_url(variant: BuiltinMountVariant) -> &'static str {
+    match variant {
+        BuiltinMountVariant::Lite => LITE_SOURCE_URL,
+        BuiltinMountVariant::Full => FULL_SOURCE_URL,
+    }
+}
+
+const fn lkm_purpose(variant: BuiltinMountVariant, lkm_count: usize) -> &'static str {
+    if lkm_count == 0 {
+        return "No compatibility LKM is bundled";
+    }
+
+    match variant {
+        BuiltinMountVariant::Lite => "Legacy compatibility LKM assets",
+        BuiltinMountVariant::Full => "Ext4 sysfs compatibility fallback for non-KernelSU platforms",
+    }
 }
 
 #[derive(Default)]
@@ -153,16 +193,9 @@ fn read_archive_lkm_info(variant: BuiltinMountVariant) -> ArchiveLkmInfo {
         let Ok(file) = archive.by_index(index) else {
             continue;
         };
-        let name = file.name();
-        let Some(file_name) = name.strip_prefix(KASUMI_LKM_PREFIX) else {
-            continue;
-        };
-        let Some(kmi) = file_name.strip_suffix(KASUMI_LKM_SUFFIX) else {
-            continue;
-        };
-        if !kmi.is_empty() {
+        if let Some(kmi) = archive_lkm_kmi(file.name()) {
             lkm_count += 1;
-            supported_kmis.push(kmi.to_owned());
+            supported_kmis.push(kmi);
         }
     }
     supported_kmis.sort();
@@ -171,6 +204,25 @@ fn read_archive_lkm_info(variant: BuiltinMountVariant) -> ArchiveLkmInfo {
         lkm_count,
         supported_kmis,
     }
+}
+
+fn archive_lkm_kmi(name: &str) -> Option<String> {
+    let name = name.trim_start_matches("./");
+    let file_name = name
+        .strip_prefix(CURRENT_LKM_PREFIX)
+        .or_else(|| name.strip_prefix(LEGACY_KASUMI_LKM_PREFIX))?;
+
+    if let Some(kmi) = file_name
+        .strip_prefix("nuke-")
+        .and_then(|value| value.strip_suffix(".ko"))
+    {
+        return (!kmi.is_empty()).then(|| kmi.to_owned());
+    }
+
+    file_name
+        .strip_suffix(LEGACY_KASUMI_LKM_SUFFIX)
+        .filter(|kmi| !kmi.is_empty())
+        .map(ToOwned::to_owned)
 }
 
 pub fn print_default_mode() {
@@ -371,7 +423,17 @@ fn install_or_update_builtin_module(module_dir: &Path, variant: BuiltinMountVari
 }
 
 fn prepare_extracted_builtin_module(module_dir: &Path) -> Result<()> {
-    let binary_source = module_dir.join("binaries").join(HYBRID_MOUNT_BINARY);
+    let binaries_dir = module_dir.join("binaries");
+    let binary_source = [packaged_binary_name(), HYBRID_MOUNT_BINARY]
+        .into_iter()
+        .map(|name| binaries_dir.join(name))
+        .find(|path| path.is_file())
+        .with_context(|| {
+            format!(
+                "no Hybrid Mount binary for target architecture in {}",
+                binaries_dir.display()
+            )
+        })?;
     let binary_target = module_dir.join(HYBRID_MOUNT_BINARY);
     fs::copy(&binary_source, &binary_target).with_context(|| {
         format!(
@@ -385,6 +447,15 @@ fn prepare_extracted_builtin_module(module_dir: &Path) -> Result<()> {
     remove_path_if_exists(&module_dir.join("system"))?;
     set_builtin_permissions(module_dir)?;
     Ok(())
+}
+
+fn packaged_binary_name() -> &'static str {
+    match std::env::consts::ARCH {
+        "aarch64" => "hybrid-mount-arm64",
+        "arm" => "hybrid-mount-armv7",
+        "x86_64" => "hybrid-mount-x86_64",
+        _ => HYBRID_MOUNT_BINARY,
+    }
 }
 
 fn set_builtin_permissions(module_dir: &Path) -> Result<()> {
@@ -458,15 +529,18 @@ fn ensure_compat_module_entry(module_dir: &Path) -> Result<()> {
     )
     .with_context(|| "failed to copy builtin mount module.prop to compat entry")?;
 
-    let kasumi_lkm_dir = module_dir.join("kasumi_lkm");
-    if kasumi_lkm_dir.exists() {
-        let compat_kasumi_lkm_dir = compat_dir.join("kasumi_lkm");
-        #[cfg(unix)]
-        std::os::unix::fs::symlink(&kasumi_lkm_dir, &compat_kasumi_lkm_dir).with_context(|| {
+    #[cfg(unix)]
+    for resource_dir in ["lkm", "kasumi_lkm"] {
+        let source = module_dir.join(resource_dir);
+        if !source.exists() {
+            continue;
+        }
+        let target = compat_dir.join(resource_dir);
+        std::os::unix::fs::symlink(&source, &target).with_context(|| {
             format!(
                 "failed to symlink {} to {}",
-                kasumi_lkm_dir.display(),
-                compat_kasumi_lkm_dir.display()
+                source.display(),
+                target.display()
             )
         })?;
     }
@@ -639,7 +713,7 @@ fn write_default_mode_for_variant(mode: MountMode, variant: BuiltinMountVariant)
     utils::ensure_dir_exists(parent)?;
 
     let content = fs::read_to_string(config).unwrap_or_else(|_| default_config(mode, variant));
-    let content = reconcile_variant_config(content, variant);
+    let content = reconcile_variant_config(&content);
     let mut found = false;
     let mut output = String::new();
     for line in content.lines() {
@@ -676,22 +750,13 @@ fn write_default_mode_for_variant(mode: MountMode, variant: BuiltinMountVariant)
     Ok(())
 }
 
-fn reconcile_variant_config(mut content: String, variant: BuiltinMountVariant) -> String {
-    match variant {
-        BuiltinMountVariant::Lite => remove_kasumi_sections(&content),
-        BuiltinMountVariant::Full => {
-            if !content.lines().any(|line| line.trim() == "[kasumi]") {
-                if !content.ends_with('\n') {
-                    content.push('\n');
-                }
-                content.push_str(full_kasumi_config());
-            }
-            content
-        }
-    }
+fn reconcile_variant_config(content: &str) -> String {
+    // v6.2.0 rejects unknown TOML fields. Remove the pre-v6 Kasumi extension
+    // when upgrading an existing built-in Full installation.
+    remove_legacy_kasumi_sections(content)
 }
 
-fn remove_kasumi_sections(content: &str) -> String {
+fn remove_legacy_kasumi_sections(content: &str) -> String {
     let mut output = String::new();
     let mut skip_section = false;
     for line in content.lines() {
@@ -702,7 +767,7 @@ fn remove_kasumi_sections(content: &str) -> String {
         {
             skip_section = section == "kasumi" || section.starts_with("kasumi.");
         }
-        if !skip_section {
+        if !skip_section && !trimmed.starts_with("enable_overlay_fallback") {
             output.push_str(line);
             output.push('\n');
         }
@@ -710,54 +775,64 @@ fn remove_kasumi_sections(content: &str) -> String {
     output
 }
 
-fn default_config(mode: MountMode, variant: BuiltinMountVariant) -> String {
-    let mut config = format!(
-        "default_mode = \"{}\"\n\
-         disable_umount = false\n\
-         enable_overlay_fallback = false\n\
-         moduledir = \"/data/adb/modules\"\n\
+fn default_config(mode: MountMode, _variant: BuiltinMountVariant) -> String {
+    format!(
+        "moduledir = \"/data/adb/modules\"\n\
          mountsource = \"KSU\"\n\
-         overlay_mode = \"ext4\"\n",
+         overlay_mode = \"ext4\"\n\
+         disable_umount = false\n\
+         default_mode = \"{}\"\n\
+         \n\
+         [rules]\n",
         mode.as_str()
-    );
-    if variant == BuiltinMountVariant::Full {
-        config.push_str(full_kasumi_config());
-    }
-    config
+    )
 }
 
-const fn full_kasumi_config() -> &'static str {
-    "\n\
-     [kasumi]\n\
-     cmdline_value = \"\"\n\
-     enable_hidexattr = false\n\
-     enable_kernel_debug = false\n\
-     enable_maps_spoof = false\n\
-     enable_mount_hide = false\n\
-     enable_statfs_spoof = false\n\
-     enable_stealth = false\n\
-     enabled = false\n\
-     hide_uids = []\n\
-     lkm_autoload = true\n\
-     lkm_dir = \"/data/adb/modules/hybrid_mount/kasumi_lkm\"\n\
-     lkm_kmi_override = \"\"\n\
-     mirror_path = \"/dev/kasumi_mirror\"\n\
-     uname_mode = \"scoped\"\n\
-     \n\
-     [kasumi.mount_hide]\n\
-     enabled = false\n\
-     path_pattern = \"\"\n\
-     \n\
-     [kasumi.statfs_spoof]\n\
-     enabled = false\n\
-     path = \"\"\n\
-     spoof_f_type = 0\n\
-     \n\
-     [kasumi.uname]\n\
-     domainname = \"\"\n\
-     machine = \"\"\n\
-     nodename = \"\"\n\
-     release = \"\"\n\
-     sysname = \"\"\n\
-     version = \"\"\n"
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_current_lkm_names() {
+        assert_eq!(
+            archive_lkm_kmi("lkm/binaries/nuke-android15-6.6.ko").as_deref(),
+            Some("android15-6.6")
+        );
+        assert_eq!(
+            archive_lkm_kmi("lkm/binaries/nuke-android-4.14.ko").as_deref(),
+            Some("android-4.14")
+        );
+    }
+
+    #[test]
+    fn parses_legacy_kasumi_lkm_names() {
+        assert_eq!(
+            archive_lkm_kmi("kasumi_lkm/android15-6.6_arm64_kasumi_lkm.ko").as_deref(),
+            Some("android15-6.6")
+        );
+    }
+
+    #[test]
+    fn latest_full_archive_reports_all_compatibility_kmis() {
+        let info = read_archive_lkm_info(BuiltinMountVariant::Full);
+        assert_eq!(info.lkm_count, 8);
+        assert!(info.supported_kmis.contains(&"android15-6.6".to_owned()));
+        assert!(info.supported_kmis.contains(&"android16-6.12".to_owned()));
+    }
+
+    #[test]
+    fn legacy_config_extensions_are_removed_for_current_binary() {
+        let input = concat!(
+            "default_mode = \"overlay\"\n",
+            "enable_overlay_fallback = false\n",
+            "[kasumi]\n",
+            "enabled = false\n",
+            "[rules]\n",
+            "foo = \"bar\"\n",
+        );
+        let migrated = reconcile_variant_config(input);
+        assert!(!migrated.contains("enable_overlay_fallback"));
+        assert!(!migrated.contains("[kasumi]"));
+        assert!(migrated.contains("[rules]"));
+    }
 }

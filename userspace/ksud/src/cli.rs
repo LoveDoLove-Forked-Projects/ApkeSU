@@ -31,7 +31,7 @@ enum Commands {
         command: Module,
     },
 
-    /// Manage built-in Hybrid Mount Lite
+    /// Manage the built-in Hybrid Mount package
     BuiltinMount {
         #[command(subcommand)]
         command: BuiltinMount,
@@ -597,10 +597,10 @@ enum BuiltinMount {
     /// Print built-in mount status as JSON
     Status,
 
-    /// Install or enable built-in Hybrid Mount Lite
+    /// Install or enable the built-in Hybrid Mount package
     Enable,
 
-    /// Disable built-in Hybrid Mount Lite
+    /// Disable the built-in Hybrid Mount package
     Disable,
 
     /// Print the global default mount mode
