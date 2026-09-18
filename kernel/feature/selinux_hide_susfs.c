@@ -204,6 +204,12 @@ void __exit ksu_selinux_hide_exit()
     mutex_lock(&selinux_hide_mutex);
     WRITE_ONCE(ksu_selinux_hide_enabled, false);
     WRITE_ONCE(ksu_selinux_hide_running, false);
+    if (backup_sepolicy) {
+        sidtab_destroy(backup_sepolicy->sidtab);
+        kfree(backup_sepolicy->sidtab);
+        ksu_destroy_sepolicy(backup_sepolicy);
+        backup_sepolicy = NULL;
+    }
     mutex_unlock(&selinux_hide_mutex);
     ksu_unregister_feature_handler(KSU_FEATURE_SELINUX_HIDE);
     mutex_lock(&selinux_state.status_lock);
@@ -216,16 +222,11 @@ void __exit ksu_selinux_hide_exit()
 
 void ksu_selinux_hide_drop_backup_if_unused()
 {
-    mutex_lock(&selinux_hide_mutex);
-    if (!READ_ONCE(ksu_selinux_hide_running) &&
-        !READ_ONCE(ksu_selinux_hide_enabled) && backup_sepolicy) {
-        pr_info("selinux_hide is not enabled - drop backup_sepolicy\n");
-        sidtab_destroy(backup_sepolicy->sidtab);
-        kfree(backup_sepolicy->sidtab);
-        ksu_destroy_sepolicy(backup_sepolicy);
-        backup_sepolicy = NULL;
-    }
-    mutex_unlock(&selinux_hide_mutex);
+    /*
+     * This feature can be enabled after boot_completed. Keep the pristine
+     * policy for the full boot so a later enable does not fail with -EAGAIN.
+     * The module exit path releases it when an unload actually occurs.
+     */
 }
 
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 6, 0)

@@ -1205,11 +1205,15 @@ fn list_module(path: &str) -> Vec<HashMap<String, String>> {
     modules
 }
 
-pub fn list_modules() -> Result<()> {
+pub fn get_modules() -> Vec<HashMap<String, String>> {
     if let Err(e) = handle_updated_modules() {
         warn!("handle updated modules before list failed: {e}");
     }
-    let modules = list_module(defs::MODULE_DIR);
+    list_module(defs::MODULE_DIR)
+}
+
+pub fn list_modules() -> Result<()> {
+    let modules = get_modules();
     println!("{}", serde_json::to_string_pretty(&modules)?);
     Ok(())
 }

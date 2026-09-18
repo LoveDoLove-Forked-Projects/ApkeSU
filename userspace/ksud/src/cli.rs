@@ -12,7 +12,7 @@ use crate::module::regenerate_preinit_rc;
 use crate::{
     apk_sign, assets, builtin_mount, cpu_spoof, debug, defs, dynamic_manager, epkesu_hide,
     init_event, kpatch_next, kpm, ksu_uapi, ksucalls, module, module_config, pathmask, rescue,
-    sulog, utils,
+    sulog, utils, web_manager,
 };
 
 /// KernelSU userspace cli
@@ -78,6 +78,12 @@ enum Commands {
 
     /// Trigger `service` event
     Services,
+
+    /// Manage the persistent native Web Manager
+    WebManager {
+        #[command(subcommand)]
+        command: WebManager,
+    },
 
     /// Run sulog reader daemon. Not for user. Use `ksud debug sulogd` to launch daemon.
     #[command(hide = true)]
@@ -548,6 +554,31 @@ enum Module {
         #[command(subcommand)]
         command: ModuleConfigCmd,
     },
+}
+
+#[derive(clap::Subcommand, Debug)]
+enum WebManager {
+    /// Enable the persistent server and start it now
+    Enable {
+        /// Loopback TCP port (1024-65535)
+        #[arg(long)]
+        port: Option<u16>,
+    },
+    /// Disable auto-start and stop the current server
+    Disable,
+    /// Start the server when it is enabled
+    Start,
+    /// Stop the current server without changing the persistent switch
+    Stop,
+    /// Print server status as JSON
+    Status,
+    /// Print the authenticated loopback URL
+    Url,
+    /// Generate a new authentication token
+    RotateToken,
+    /// Internal daemon entry point
+    #[command(hide = true)]
+    Serve,
 }
 
 #[derive(clap::Subcommand, Debug)]
@@ -1234,6 +1265,16 @@ pub fn run() -> Result<()> {
             init_event::on_services();
             Ok(())
         }
+        Commands::WebManager { command } => match command {
+            WebManager::Enable { port } => web_manager::enable(port),
+            WebManager::Disable => web_manager::disable(),
+            WebManager::Start => web_manager::start(),
+            WebManager::Stop => web_manager::stop(),
+            WebManager::Status => web_manager::print_status(),
+            WebManager::Url => web_manager::print_url(),
+            WebManager::RotateToken => web_manager::rotate_token(),
+            WebManager::Serve => web_manager::serve(),
+        },
         Commands::Sulogd => sulog::run_sulogd(),
         Commands::Profile { command } => match command {
             Profile::GetSepolicy { package } => crate::profile::get_sepolicy(&package),

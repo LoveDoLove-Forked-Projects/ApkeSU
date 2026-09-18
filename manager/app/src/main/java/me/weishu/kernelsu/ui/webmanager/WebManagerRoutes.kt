@@ -1,5 +1,7 @@
 package me.weishu.kernelsu.ui.webmanager
 
+import java.net.URI
+
 /**
  * Pure path/identifier parsing shared by [WebManagerServer].
  *
@@ -38,6 +40,13 @@ internal object WebManagerRoutes {
         ?.let { TOKEN_PATH_PREFIX + it }
         .orEmpty()
 
+    /** Removes a valid token scope before the server classifies a request. */
+    fun routePath(rawPath: String): String = parseTokenPath(rawPath)?.routePath ?: rawPath
+
+    /** Base URL used by relative module WebUI resources. */
+    fun webUiBaseUrl(tokenPrefix: String, moduleId: String): String =
+        "$tokenPrefix$WEBUI_PATH_PREFIX$moduleId/"
+
     /**
      * Absolute URL of the injected WebUI bridge script. It always carries the
      * token prefix so the script loads even when the browser drops the cookie.
@@ -60,6 +69,37 @@ internal object WebManagerRoutes {
         val routePath = rest.substring(separator)
         if (routePath.length < 2) return null
         return TokenPath(token, routePath)
+    }
+
+    /**
+     * Maps root-relative WebUI assets (for example `/assets/index.js`) back to
+     * the module named by the same-origin referrer. Native WebView hosts a
+     * module at `/`, while the browser manager needs a namespaced route.
+     */
+    fun resolveRootRelativeWebUiAsset(
+        requestPath: String,
+        referrer: String?,
+        port: Int,
+        activeToken: String,
+    ): String? {
+        if (requestPath == "/" ||
+            requestPath.startsWith("/api/") ||
+            requestPath.startsWith(TOKEN_PATH_PREFIX) ||
+            requestPath.startsWith(WEBUI_PATH_PREFIX) ||
+            requestPath == BRIDGE_PATH
+        ) {
+            return null
+        }
+        val uri = referrer?.let { runCatching { URI(it) }.getOrNull() } ?: return null
+        if (!uri.scheme.equals("http", ignoreCase = true)) return null
+        if (uri.host !in setOf("127.0.0.1", "localhost", "[::1]", "::1")) return null
+        if (uri.port != port) return null
+        val tokenPath = parseTokenPath(uri.path.orEmpty()) ?: return null
+        if (tokenPath.token != activeToken) return null
+        val source = resolveWebUiAsset(tokenPath.routePath) as? AssetResolution.Asset ?: return null
+        val relativePath = requestPath.removePrefix("/")
+        val candidate = "$WEBUI_PATH_PREFIX${source.moduleId}/$relativePath"
+        return if (resolveWebUiAsset(candidate) is AssetResolution.Asset) candidate else null
     }
 
     /**

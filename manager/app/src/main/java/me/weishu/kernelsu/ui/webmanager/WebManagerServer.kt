@@ -1,10 +1,12 @@
 package me.weishu.kernelsu.ui.webmanager
 
+import android.content.Context
 import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.os.Build
+import android.os.PowerManager
 import android.os.SystemClock
 import android.system.Os
 import android.util.Log
@@ -35,6 +37,7 @@ import me.weishu.kernelsu.ui.util.getHiddenPathConfig
 import me.weishu.kernelsu.ui.util.getHiddenPathLogs
 import me.weishu.kernelsu.ui.util.isCpuSpoofModelValid
 import me.weishu.kernelsu.ui.util.restoreDefaultCpuSpoof
+import me.weishu.kernelsu.ui.util.reboot
 import me.weishu.kernelsu.ui.util.saveCpuSpoofTarget
 import me.weishu.kernelsu.ui.util.setCpuSpoofEnabled
 import me.weishu.kernelsu.ui.util.setHiddenPathAutoLoad
@@ -86,6 +89,7 @@ import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.TimeoutException
+import java.util.concurrent.atomic.AtomicBoolean
 import android.content.ComponentName
 
 /**
@@ -150,6 +154,9 @@ internal object WebManagerServer {
     /** 工具箱：状态探测 6s，写入 15s（软重启等要等 ksud 返回）。 */
     private const val TOOLS_QUERY_DEADLINE_MILLIS = 6_000L
     private const val TOOLS_ACTION_DEADLINE_MILLIS = 15_000L
+    private const val REBOOT_ROOT_CHECK_DEADLINE_MILLIS = 4_000L
+    /** Let the HTTP 202 response leave the socket before Android tears down userspace. */
+    private const val REBOOT_DISPATCH_DELAY_MILLIS = 750L
     /** 网页管理器界面语言固定为中文，语言设置只作用于原生管理器。 */
     private const val WEB_MANAGER_PAGE_LANGUAGE = "zh-CN"
     /** 外观图片允许浏览器私有缓存；URL 里带 updatedAt 做缓存失效。 */
@@ -174,6 +181,7 @@ internal object WebManagerServer {
     private val superUserRepository = SuperUserRepositoryImpl()
     private val settingsRepository: SettingsRepository by lazy { SettingsRepositoryImpl() }
     private val jobs = WebManagerJobs()
+    private val rebootPending = AtomicBoolean(false)
     private val activeActionShells = HashMap<String, Shell>()
     private val queryExecutor = Executors.newCachedThreadPool { runnable ->
         Thread(runnable, "ApkeSU-WebManager-Query").apply { isDaemon = true }
@@ -250,13 +258,19 @@ internal object WebManagerServer {
         executor?.shutdownNow()
         executor = null
         token = null
+        boundPort = 0
         startedAtElapsedRealtime = 0L
         warmUpThread?.interrupt()
         warmUpThread = null
         invalidateModuleSnapshot()
         synchronized(appSnapshotLock) { cachedAppSnapshot = null }
+        synchronized(deviceSnapshotLock) { cachedDeviceSnapshot = null }
         synchronized(actionShellsLock) {
-            activeActionShells.values.forEach { shell -> runCatching { shell.close() } }
+            val now = SystemClock.elapsedRealtime()
+            activeActionShells.forEach { (jobId, shell) ->
+                jobs.cancel(jobId, now)
+                runCatching { shell.close() }
+            }
             activeActionShells.clear()
         }
         Log.i(TAG, "web manager stopped")
@@ -333,10 +347,12 @@ internal object WebManagerServer {
                 return
             }
             val rawPath = target.path.orEmpty()
+            val tokenPath = WebManagerRoutes.parseTokenPath(rawPath)
+            val requestRoutePath = WebManagerRoutes.routePath(rawPath)
             // Only the KPM import endpoint accepts a binary payload, so it gets a
             // larger cap than the JSON endpoints.
-            val bodyLimit = if (rawPath.endsWith(KPM_IMPORT_PATH) ||
-                rawPath.startsWith(WebManagerRoutes.ASSET_PATH_PREFIX)
+            val bodyLimit = if (requestRoutePath == KPM_IMPORT_PATH ||
+                requestRoutePath.startsWith(WebManagerRoutes.ASSET_PATH_PREFIX)
             ) {
                 MAX_UPLOAD_BYTES
             } else {
@@ -365,8 +381,7 @@ internal object WebManagerServer {
             }
 
             val currentToken = synchronized(lock) { token }
-            val tokenPath = WebManagerRoutes.parseTokenPath(rawPath)
-            val routePath = tokenPath?.routePath ?: rawPath
+            val routePath = requestRoutePath
             val parameters = query(target.rawQuery)
             val headerToken = WebManagerSecurity.bearerToken(headers["authorization"])
             val cookieToken = WebManagerSecurity.cookieToken(headers["cookie"])
@@ -405,7 +420,31 @@ internal object WebManagerServer {
             val tokenPrefix = WebManagerRoutes.tokenPrefix(currentToken)
             val wantsHtml = headers["accept"]?.contains("text/html", ignoreCase = true) == true
             val response = runCatching {
-                route(method, routePath, parameters, requestBody, tokenPrefix, requestBodyBytes, wantsHtml)
+                val primary = route(
+                    method,
+                    routePath,
+                    parameters,
+                    requestBody,
+                    tokenPrefix,
+                    requestBodyBytes,
+                    wantsHtml,
+                )
+                val fallbackPath = if (method == "GET" && primary.status in setOf(404, 405)) {
+                    WebManagerRoutes.resolveRootRelativeWebUiAsset(
+                        requestPath = routePath,
+                        referrer = headers["referer"],
+                        port = boundPort,
+                        activeToken = currentToken,
+                    )
+                } else {
+                    null
+                }
+                if (fallbackPath != null) {
+                    diagnostics.info("webui", "mapped root asset $routePath -> $fallbackPath")
+                    webUiAssetResponse(fallbackPath, tokenPrefix, wantsHtml)
+                } else {
+                    primary
+                }
             }.getOrElse { error ->
                 Log.e(TAG, "request handler failed", error)
                 diagnostics.error("route", "$method $routePath failed", error)
@@ -467,15 +506,21 @@ internal object WebManagerServer {
             method == "POST" && path == "/api/settings/launcher" -> handleLauncherAction(body)
             method == "GET" && path == "/api/features" -> HttpResponse(200, featuresJson())
             method == "GET" && path == "/api/tools" -> HttpResponse(200, toolsJson())
+            method == "GET" && path == "/api/tools/reboot" -> HttpResponse(200, rebootStatusJson())
             method == "POST" && path == "/api/tools/builtin-mount" -> handleBuiltinMountAction(body)
             method == "POST" && path == "/api/tools/kpatch" -> handleKPatchAction(body)
             method == "POST" && path == "/api/tools/pathmask" -> handlePathmaskAction(body)
             method == "POST" && path == "/api/tools/cpu-spoof" -> handleCpuSpoofAction(body)
-            method == "POST" && path == "/api/tools/soft-reboot" -> handleSoftRebootAction()
+            method == "POST" && path == "/api/tools/reboot" -> handleRebootAction(body)
+            method == "POST" && path == "/api/tools/soft-reboot" ->
+                scheduleReboot(WebManagerRebootMode.SOFT)
             method == "POST" && path == "/api/settings/language" -> handleLanguageAction(body)
             method == "POST" && path == "/api/features" -> handleFeatureAction(body)
             method == "POST" && path == "/api/settings/asset-meta" -> handleAssetMetaAction(body)
-            method == "GET" && path == "/api/device" -> HttpResponse(200, deviceJson())
+            method == "GET" && path == "/api/device" -> HttpResponse(
+                200,
+                deviceJson(forceRefresh = parameters["refresh"] == "1"),
+            )
             method == "GET" && path == "/api/kpm" -> kpmResponse()
             method == "POST" && path == "/api/kpm/policy" -> handleKpmPolicy(body)
             method == "POST" && path == "/api/kpm/action" -> handleKpmAction(body)
@@ -736,7 +781,8 @@ internal object WebManagerServer {
     private fun jobSnapshotResponse(jobId: String, parameters: Map<String, String>): HttpResponse {
         val snapshot = jobs.snapshot(jobId)
             ?: return errorResponse(404, "job_not_found", "执行任务不存在或已过期")
-        val offset = parameters["offset"]?.toIntOrNull()?.coerceAtLeast(0) ?: 0
+        val totalLength = jobs.producedLength(jobId)
+        val offset = parameters["offset"]?.toIntOrNull()?.coerceIn(0, totalLength) ?: 0
         val delta = jobs.snapshot(jobId, offset) ?: snapshot
         return HttpResponse(
             200,
@@ -748,7 +794,7 @@ internal object WebManagerServer {
                 .put("exitCode", snapshot.exitCode ?: JSONObject.NULL)
                 .put("output", delta.output)
                 .put("offset", offset + delta.output.length)
-                .put("totalLength", jobs.producedLength(jobId))
+                .put("totalLength", totalLength)
                 .put("truncated", snapshot.truncated)
                 .put("startedAtMillis", snapshot.startedAtMillis)
                 .put("finishedAtMillis", snapshot.finishedAtMillis ?: JSONObject.NULL)
@@ -858,52 +904,86 @@ internal object WebManagerServer {
             val rootFuture = appQueryExecutor.submit(Callable { queryRootSnapshot(now) })
             val localFuture = appQueryExecutor.submit(Callable { queryLocalSnapshot(now) })
 
-            val rootSnapshot = awaitSnapshot(rootFuture, ROOT_APP_WAIT_MILLIS)
-            if (rootSnapshot != null) {
-                localFuture.cancel(true)
-                cachedAppSnapshot = rootSnapshot
+            val localSnapshot = awaitSnapshot(localFuture, LOCAL_APP_WAIT_MILLIS)
+            val rootSnapshot = awaitSnapshot(
+                rootFuture,
+                if (localSnapshot == null) ROOT_APP_WAIT_MILLIS + LOCAL_APP_WAIT_MILLIS else ROOT_APP_WAIT_MILLIS,
+            )
+            if (localSnapshot != null || rootSnapshot != null) {
+                val selected = when {
+                    localSnapshot != null && rootSnapshot != null -> mergeSuperUserSnapshots(localSnapshot, rootSnapshot)
+                    localSnapshot != null -> localSnapshot
+                    else -> rootSnapshot!!
+                }
+                cachedAppSnapshot = selected
                 diagnostics.info(
                     "apps",
-                    "root snapshot: ${rootSnapshot.entries.size} uids in " +
+                    "${selected.source} snapshot: ${selected.entries.size} uids in " +
                         "${SystemClock.elapsedRealtime() - started}ms",
                 )
-                return Result.success(rootSnapshot)
-            }
-
-            // Root 还在忙：起个守护线程等它完成，把缓存升级成 root 来源（不阻塞当前请求）
-            Thread({
-                val late = runCatching {
-                    rootFuture.get(LOCAL_APP_WAIT_MILLIS + ROOT_APP_WAIT_MILLIS, TimeUnit.MILLISECONDS)
-                }.getOrNull()
-                if (late != null) {
-                    synchronized(appSnapshotLock) {
-                        val current = cachedAppSnapshot
-                        if (current == null || current.cachedAt < late.cachedAt) {
-                            cachedAppSnapshot = late
-                            diagnostics.info("apps", "root snapshot arrived late, cache upgraded")
-                        }
-                    }
+                if (localSnapshot != null && rootSnapshot == null) {
+                    upgradeAppSnapshotWhenRootCompletes(rootFuture, localSnapshot)
                 }
-            }, "ApkeSU-WebManager-AppsUpgrade").apply {
-                isDaemon = true
-                start()
-            }
-
-            val localSnapshot = awaitSnapshot(localFuture, LOCAL_APP_WAIT_MILLIS)
-            if (localSnapshot != null) {
-                cachedAppSnapshot = localSnapshot
-                diagnostics.warn(
-                    "apps",
-                    "root query slow, serving local snapshot: ${localSnapshot.entries.size} uids in " +
-                        "${SystemClock.elapsedRealtime() - started}ms",
-                )
-                return Result.success(localSnapshot)
+                return Result.success(selected)
             }
 
             diagnostics.error("apps", "no packages available from root or PackageManager")
             return Result.failure(
                 IllegalStateException("root query and PackageManager returned no packages"),
             )
+        }
+    }
+
+    private fun mergeSuperUserSnapshots(
+        local: SuperUserSnapshot,
+        root: SuperUserSnapshot,
+    ): SuperUserSnapshot {
+        val localByUid = local.entries.associateBy { it.uid }
+        val rootByUid = root.entries.associateBy { it.uid }
+        val entries = (localByUid.keys + rootByUid.keys).map { uid ->
+            val localEntry = localByUid[uid]
+            val rootEntry = rootByUid[uid]
+            val primary = rootEntry ?: localEntry!!
+            val variants = listOfNotNull(localEntry, rootEntry)
+            SuperUserEntry(
+                uid = uid,
+                packageName = primary.packageName,
+                label = primary.label,
+                profileKeys = variants.flatMap { it.profileKeys }.distinct(),
+                allowSu = variants.any { it.allowSu },
+                customProfile = variants.any { it.customProfile },
+                appCount = maxOf(localEntry?.appCount ?: 0, rootEntry?.appCount ?: 0),
+                sharedUid = variants.any { it.sharedUid },
+                isSystem = rootEntry?.isSystem ?: localEntry?.isSystem ?: false,
+            )
+        }.sortedBy { it.label.lowercase(Locale.ROOT) }
+        return SuperUserSnapshot(
+            entries = entries,
+            source = "root+local",
+            totalApps = maxOf(local.totalApps, root.totalApps),
+            cachedAt = maxOf(local.cachedAt, root.cachedAt),
+        )
+    }
+
+    private fun upgradeAppSnapshotWhenRootCompletes(
+        rootFuture: java.util.concurrent.Future<SuperUserSnapshot?>,
+        localSnapshot: SuperUserSnapshot,
+    ) {
+        Thread({
+            val rootSnapshot = runCatching {
+                rootFuture.get(LOCAL_APP_WAIT_MILLIS + ROOT_APP_WAIT_MILLIS, TimeUnit.MILLISECONDS)
+            }.getOrNull() ?: return@Thread
+            val merged = mergeSuperUserSnapshots(localSnapshot, rootSnapshot)
+            synchronized(appSnapshotLock) {
+                val current = cachedAppSnapshot
+                if (current == null || current.cachedAt <= merged.cachedAt) {
+                    cachedAppSnapshot = merged
+                    diagnostics.info("apps", "root snapshot arrived late, cache merged")
+                }
+            }
+        }, "ApkeSU-WebManager-AppsUpgrade").apply {
+            isDaemon = true
+            start()
         }
     }
 
@@ -1445,26 +1525,36 @@ internal object WebManagerServer {
      * spawns a root shell for the KMI/slot probes, so the result is cached and the
      * whole collection runs under the query deadline.
      */
-    private fun deviceJson(): String {
+    private fun deviceJson(forceRefresh: Boolean = false): String {
         val now = SystemClock.elapsedRealtime()
-        synchronized(deviceSnapshotLock) {
-            cachedDeviceSnapshot
-                ?.takeIf { now - it.cachedAt < DEVICE_SNAPSHOT_TTL_MILLIS }
-                ?.let { return it.json.toString() }
+        val staleSnapshot = synchronized(deviceSnapshotLock) {
+            val cached = cachedDeviceSnapshot
+            if (!forceRefresh) {
+                cached
+                    ?.takeIf { now - it.cachedAt < DEVICE_SNAPSHOT_TTL_MILLIS }
+                    ?.let { return it.json.toString() }
+            }
+            cached
         }
 
         val started = SystemClock.elapsedRealtime()
         val collected = runWithDeadline(DEVICE_QUERY_DEADLINE_MILLIS, "device") { loadDeviceJson() }
-            ?: runCatching { loadDeviceJson() }.getOrNull()
+        val usingFallback = collected == null
+        val base = collected
+            ?: staleSnapshot?.json?.let { JSONObject(it.toString()) }
             ?: JSONObject()
                 .put("kernel", JSONObject().put("mode", "unknown"))
                 .put("device", JSONObject())
-        val enriched = JSONObject(collected.toString())
+        val enriched = JSONObject(base.toString())
             .put("apiVersion", API_VERSION)
             .put("port", boundPort)
             .put("queryMillis", SystemClock.elapsedRealtime() - started)
-        synchronized(deviceSnapshotLock) {
-            cachedDeviceSnapshot = DeviceSnapshot(enriched, SystemClock.elapsedRealtime())
+            .put("stale", usingFallback && staleSnapshot != null)
+            .put("errorCode", if (usingFallback) "device_query_unavailable" else JSONObject.NULL)
+        if (collected != null) {
+            synchronized(deviceSnapshotLock) {
+                cachedDeviceSnapshot = DeviceSnapshot(enriched, SystemClock.elapsedRealtime())
+            }
         }
         return enriched.toString()
     }
@@ -1532,9 +1622,11 @@ internal object WebManagerServer {
 
     private fun webUiAssetFailureReason(moduleId: String, relativePath: String, entryRequest: Boolean): String {
         val webRoot = "$MODULES_ROOT/$moduleId/webroot"
-        if (rootShellForRead() == null) {
+        val shell = rootShellForRead()
+        if (shell == null) {
             return "root shell 不可用，无法读取 $webRoot/$relativePath；请在管理器里确认 Root 授权后重试。"
         }
+        runCatching { shell.close() }
         return if (entryRequest) {
             "在 $webRoot 里找不到 $relativePath（模块未启用、缺少 webroot/ 目录或入口文件名不是 index.html）。"
         } else {
@@ -1677,6 +1769,14 @@ internal object WebManagerServer {
             "feature_failed",
             "${toggle.label} 写入失败或超时：内核可能不支持该特性",
         )
+        if (!applied) {
+            diagnostics.warn("features", "${toggle.key} -> $enabled rejected by repository")
+            return errorResponse(
+                500,
+                "feature_apply_rejected",
+                "${toggle.label} 未能写入：内核可能不支持该特性",
+            )
+        }
         runCatching { settingsRepository.execKsudFeatureSave() }
             .onFailure { error -> diagnostics.warn("features", "feature save failed: ${error.message}") }
         diagnostics.info("features", "${toggle.key} -> $enabled (applied=$applied)")
@@ -1754,6 +1854,9 @@ internal object WebManagerServer {
             ?: return errorResponse(400, "bad_request", "请求内容不是合法 JSON")
         val mode = payload.optString("mode", "random")
         val requested = payload.optInt("port", 0)
+        if (mode != "random" && mode != "fixed") {
+            return errorResponse(400, "invalid_port_mode", "端口模式只能是 random 或 fixed")
+        }
         if (mode == "fixed" && requested !in 1024..65535) {
             return errorResponse(400, "invalid_port", "固定端口请填 1024-65535（普通应用无法绑定更低端口）")
         }
@@ -2016,16 +2119,98 @@ internal object WebManagerServer {
             .let { HttpResponse(if (result.success) 200 else 500, it.toString()) }
     }
 
-    private fun handleSoftRebootAction(): HttpResponse {
-        val ran = runWithDeadline(TOOLS_ACTION_DEADLINE_MILLIS, "tool-soft-reboot") {
-            execKsud("soft-reboot", true, true)
-        } ?: false
-        diagnostics.info("tools", "soft reboot requested -> $ran")
-        return if (ran) {
-            HttpResponse(200, JSONObject().put("ok", true).toString())
-        } else {
-            errorResponse(500, "tool_failed", "软重启命令执行失败")
+    @Suppress("DEPRECATION")
+    private fun userspaceRebootSupported(): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return false
+        val powerManager = ksuApp.getSystemService(Context.POWER_SERVICE) as? PowerManager
+        return powerManager?.isRebootingUserspaceSupported == true
+    }
+
+    private fun rebootStatusJson(): String {
+        val rootReady = runWithDeadline(REBOOT_ROOT_CHECK_DEADLINE_MILLIS, "tool-reboot-status") {
+            rootAvailable()
+        } == true
+        return JSONObject()
+            .put("available", rootReady)
+            .put("pending", rebootPending.get())
+            .put("userspaceSupported", userspaceRebootSupported())
+            .put("lateLoad", runCatching { Natives.isLateLoadMode }.getOrDefault(false))
+            .toString()
+    }
+
+    private fun handleRebootAction(body: String?): HttpResponse {
+        val payload = runCatching { JSONObject(body.orEmpty()) }.getOrNull()
+            ?: return errorResponse(400, "bad_request", "请求内容不是合法 JSON")
+        val mode = WebManagerRebootMode.parse(payload.optString("mode", ""))
+            ?: return errorResponse(400, "invalid_reboot_mode", "不支持的重启模式")
+        if (mode == WebManagerRebootMode.USERSPACE && !userspaceRebootSupported()) {
+            return errorResponse(409, "reboot_mode_unsupported", "当前设备不支持用户空间重启")
         }
+        return scheduleReboot(mode)
+    }
+
+    /**
+     * Rebooting synchronously can close the socket before the browser receives
+     * a response. Validate root first, return 202, then dispatch on the worker
+     * pool after a short delay. The actual command is the same path used by the
+     * native Manager's reboot menu.
+     */
+    private fun scheduleReboot(mode: WebManagerRebootMode): HttpResponse {
+        val rootReady = runWithDeadline(REBOOT_ROOT_CHECK_DEADLINE_MILLIS, "tool-reboot-root") {
+            rootAvailable()
+        }
+        if (rootReady == null) {
+            return errorResponse(504, "reboot_root_timeout", "检查 root 环境超时，未发送重启命令")
+        }
+        if (!rootReady) {
+            return errorResponse(503, "reboot_root_unavailable", "root shell 不可用，未发送重启命令")
+        }
+        if (!rebootPending.compareAndSet(false, true)) {
+            return errorResponse(409, "reboot_already_pending", "已有重启请求正在执行")
+        }
+
+        val scheduled = runCatching {
+            queryExecutor.execute {
+                try {
+                    Thread.sleep(REBOOT_DISPATCH_DELAY_MILLIS)
+                    diagnostics.info("tools", "dispatch reboot mode=${mode.wireValue}")
+                    if (mode.usesKsudSoftReboot) {
+                        val dispatched = execKsud("soft-reboot", true, true)
+                        if (!dispatched) {
+                            diagnostics.warn("tools", "ksud rejected soft reboot dispatch")
+                        }
+                    } else {
+                        reboot(mode.nativeReason)
+                    }
+                } catch (_: InterruptedException) {
+                    Thread.currentThread().interrupt()
+                    diagnostics.warn("tools", "reboot ${mode.wireValue} interrupted before dispatch")
+                } catch (error: Throwable) {
+                    diagnostics.error("tools", "reboot ${mode.wireValue} failed", error)
+                } finally {
+                    rebootPending.set(false)
+                }
+            }
+            true
+        }.getOrElse { error ->
+            rebootPending.set(false)
+            diagnostics.error("tools", "unable to schedule reboot ${mode.wireValue}", error)
+            false
+        }
+        if (!scheduled) {
+            return errorResponse(500, "reboot_schedule_failed", "无法安排重启任务")
+        }
+
+        diagnostics.info("tools", "reboot ${mode.wireValue} accepted")
+        return HttpResponse(
+            202,
+            JSONObject()
+                .put("ok", true)
+                .put("accepted", true)
+                .put("mode", mode.wireValue)
+                .put("dispatchAfterMillis", REBOOT_DISPATCH_DELAY_MILLIS)
+                .toString(),
+        )
     }
 
     private fun handleLanguageAction(body: String?): HttpResponse {
@@ -2063,8 +2248,8 @@ internal object WebManagerServer {
         if (length <= 0L || length > WebManagerAssets.MAX_ASSET_BYTES) {
             return errorResponse(500, "asset_unusable", "图片文件不可用，请重新选择")
         }
-        val mime = runCatching { WebManagerAssets.guessImageMime(file.readBytes()) }
-            .getOrDefault("image/png")
+        val mime = runCatching { WebManagerAssets.detectImageMime(file.readBytes()) }.getOrNull()
+            ?: return errorResponse(500, "asset_unusable", "图片格式无法识别，请重新选择")
         return HttpResponse(
             status = 200,
             body = null,
@@ -2086,6 +2271,9 @@ internal object WebManagerServer {
         if (bodyBytes.isEmpty()) return errorResponse(400, "empty_upload", "没有收到图片内容")
         if (bodyBytes.size > WebManagerAssets.MAX_ASSET_BYTES) {
             return errorResponse(413, "asset_too_large", "图片超过 ${WebManagerAssets.MAX_ASSET_BYTES} 字节")
+        }
+        if (WebManagerAssets.detectImageMime(bodyBytes) == null) {
+            return errorResponse(415, "unsupported_image", "仅支持 PNG、JPEG、WebP 或 GIF 图片")
         }
         val directory = assetDirectory()
         if (!directory.exists() && !directory.mkdirs()) {
@@ -2372,14 +2560,15 @@ internal object WebManagerServer {
         val moduleInfo = activeWebModuleInfo(moduleId)
             ?: return HttpResponse(404, jsonError("module WebUI is unavailable"))
         val packageData = JSONArray()
-        webPackageRecords(forceRefresh = false).getOrElse { error ->
-            return errorResponse(
-                status = 503,
-                code = "package_query_failed",
-                message = "无法读取应用列表，请确认 Root 服务可用",
-                detail = error,
-            )
-        }.forEach { packageData.put(it.toJson()) }
+        webPackageRecords(forceRefresh = false)
+            .onFailure { error ->
+                diagnostics.warn(
+                    "webui",
+                    "package list unavailable for $moduleId bridge: ${error.message}",
+                )
+            }
+            .getOrDefault(emptyList())
+            .forEach { packageData.put(it.toJson()) }
         val script = bridgePlaceholderPattern.replace(WEBUI_BRIDGE_SCRIPT_TEMPLATE) { match ->
             when (match.value) {
                 "__MODULE_ID__" -> JSONObject.quote(moduleId)
@@ -2438,6 +2627,7 @@ internal object WebManagerServer {
                 status = 200,
                 contentType = SuFilePathHandler.guessMimeType(asset.relativePath),
                 stream = opened,
+                referrerPolicy = "same-origin",
             )
         }
 
@@ -2456,6 +2646,7 @@ internal object WebManagerServer {
                     tokenPrefix,
                 ),
                 contentType = "text/html; charset=utf-8",
+                referrerPolicy = "same-origin",
             )
         }.getOrElse {
             opened.close()
@@ -2465,6 +2656,15 @@ internal object WebManagerServer {
     }
 
     private fun activeWebModuleInfo(id: String): JSONObject? {
+        val module = activeWebModuleRecord(id) ?: return null
+        if (!moduleHasWebRoot(id)) return null
+        return module
+            .put("moduleDir", "$MODULES_ROOT/$id")
+            .put("webroot", true)
+            .put("web", true)
+    }
+
+    private fun activeWebModuleRecord(id: String): JSONObject? {
         if (!WebManagerSecurity.isValidModuleId(id) || isManagerHiddenModuleId(id)) {
             diagnostics.warn("webui", "invalid or hidden module id: $id")
             return null
@@ -2477,11 +2677,7 @@ internal object WebManagerServer {
             diagnostics.warn("webui", "module not active (enabled/remove): $id")
             return null
         }
-        if (!moduleHasWebRoot(id)) return null
         return JSONObject(module.toString())
-            .put("moduleDir", "$MODULES_ROOT/$id")
-            .put("webroot", true)
-            .put("web", true)
     }
 
     private fun hasActiveWebUiModule(id: String?): Boolean = id != null && activeWebModuleInfo(id) != null
@@ -2503,7 +2699,7 @@ internal object WebManagerServer {
     }
 
     private fun openModuleAsset(moduleId: String, relativePath: String): StreamBody? {
-        if (activeWebModuleInfo(moduleId) == null) return null
+        if (activeWebModuleRecord(moduleId) == null) return null
         val shell = rootShellForRead() ?: return null
         return try {
             val webRoot = File(MODULES_ROOT, "$moduleId/webroot")
@@ -2536,13 +2732,15 @@ internal object WebManagerServer {
      */
     private fun injectWebUiBridge(html: String, moduleId: String, tokenPrefix: String): String {
         val url = WebManagerRoutes.bridgeUrl(tokenPrefix, moduleId)
-        val script = "<script src=\"$url\"></script>"
+        val baseUrl = WebManagerRoutes.webUiBaseUrl(tokenPrefix, moduleId)
+        val bootstrap = "<base href=\"$baseUrl\"><script src=\"$url\"></script>"
         val lower = html.lowercase(Locale.ROOT)
-        val headEnd = lower.indexOf("</head>")
-        return if (headEnd >= 0) {
-            html.substring(0, headEnd) + script + html.substring(headEnd)
+        val headStart = lower.indexOf("<head")
+        val headOpenEnd = if (headStart >= 0) html.indexOf('>', headStart) else -1
+        return if (headOpenEnd >= 0) {
+            html.substring(0, headOpenEnd + 1) + bootstrap + html.substring(headOpenEnd + 1)
         } else {
-            script + html
+            bootstrap + html
         }
     }
 
@@ -2633,13 +2831,12 @@ internal object WebManagerServer {
                 val stdout = LimitedOutput(MAX_EXEC_OUTPUT_CHARS)
                 val stderr = LimitedOutput(MAX_EXEC_OUTPUT_CHARS)
                 val task = newJob().add(command).to(stdout, stderr).enqueue()
-                try {
+                val result = try {
                     task.get(EXEC_TIMEOUT_MILLIS, TimeUnit.MILLISECONDS)
                 } catch (_: TimeoutException) {
                     close()
                     return@withNewRootShell ExecResult(124, stdout.joinToString("\n"), "command timed out")
                 }
-                val result = task.get()
                 ExecResult(result.code, stdout.joinToString("\n"), stderr.joinToString("\n"))
             }
         }.getOrElse { error ->
@@ -2885,10 +3082,12 @@ internal object WebManagerServer {
             409 -> "Conflict"
             413 -> "Payload Too Large"
             414 -> "URI Too Long"
+            415 -> "Unsupported Media Type"
             431 -> "Request Header Fields Too Large"
             500 -> "Internal Server Error"
             502 -> "Bad Gateway"
             503 -> "Service Unavailable"
+            504 -> "Gateway Timeout"
             else -> "Error"
         }
         val contentLength = bodyBytes?.size?.toLong() ?: stream?.length
@@ -2911,7 +3110,7 @@ internal object WebManagerServer {
             cacheHeader +
             "X-Content-Type-Options: nosniff\r\n" +
             "X-Frame-Options: SAMEORIGIN\r\n" +
-            "Referrer-Policy: no-referrer\r\n" +
+            "Referrer-Policy: ${response.referrerPolicy}\r\n" +
             "Connection: close\r\n\r\n"
         try {
             output.write(header.toByteArray(StandardCharsets.ISO_8859_1))
@@ -3010,6 +3209,7 @@ internal object WebManagerServer {
         val setCookie: Boolean = false,
         /** > 0 时改用 private max-age 缓存（仅用于自定义外观图片）。 */
         val cacheSeconds: Int = 0,
+        val referrerPolicy: String = "no-referrer",
     )
 
     private data class StreamBody(

@@ -355,6 +355,94 @@ pub fn get_version() -> i32 {
     get_info().version as i32
 }
 
+pub fn get_allow_list() -> io::Result<Vec<u32>> {
+    let mut header: ksu_uapi::ksu_new_get_allow_list_cmd = unsafe { mem::zeroed() };
+    ksuctl(ksu_uapi::KSU_IOCTL_NEW_GET_ALLOW_LIST, &raw mut header)?;
+    if header.total_count == 0 {
+        return Ok(Vec::new());
+    }
+
+    for _ in 0..3 {
+        let capacity = header.total_count;
+        let mut storage = vec![0_u32; usize::from(capacity) + 1];
+        let command = storage
+            .as_mut_ptr()
+            .cast::<ksu_uapi::ksu_new_get_allow_list_cmd>();
+        unsafe {
+            (*command).count = capacity;
+            (*command).total_count = 0;
+        }
+        ksuctl(ksu_uapi::KSU_IOCTL_NEW_GET_ALLOW_LIST, command)?;
+        let (count, total_count) = unsafe { ((*command).count, (*command).total_count) };
+        if count == total_count {
+            let uids = unsafe { std::slice::from_raw_parts(storage.as_ptr().add(1), count.into()) };
+            return Ok(uids.to_vec());
+        }
+        header.total_count = total_count;
+    }
+
+    Err(io::Error::new(
+        io::ErrorKind::WouldBlock,
+        "allowlist changed while it was being read",
+    ))
+}
+
+fn copy_profile_string(
+    output: &mut [std::os::raw::c_char],
+    value: &str,
+    label: &str,
+) -> io::Result<()> {
+    if value.as_bytes().contains(&0) || value.len() >= output.len() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("invalid {label}"),
+        ));
+    }
+    output.fill(0);
+    for (target, source) in output.iter_mut().zip(value.bytes()) {
+        *target = source as std::os::raw::c_char;
+    }
+    Ok(())
+}
+
+pub fn set_root_access(package_name: &str, uid: u32, allow: bool) -> io::Result<()> {
+    let current_uid = i32::try_from(uid)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "uid is out of range"))?;
+    let mut profile: ksu_uapi::app_profile = unsafe { mem::zeroed() };
+    profile.version = ksu_uapi::KSU_APP_PROFILE_VER;
+    copy_profile_string(&mut profile.key, package_name, "package name")?;
+    profile.curr_uid = current_uid;
+    profile.allow_su = allow;
+
+    if allow {
+        let mut config: ksu_uapi::app_profile__bindgen_ty_1__bindgen_ty_1 =
+            unsafe { mem::zeroed() };
+        config.use_default = true;
+        config.profile.uid = 0;
+        config.profile.gid = 0;
+        config.profile.namespaces = 0;
+        config.profile.flags = u64::from(ksu_uapi::FLAG_KSU_NO_NEW_PRIVS);
+        copy_profile_string(
+            &mut config.profile.selinux_domain,
+            "u:r:ksu:s0",
+            "SELinux domain",
+        )?;
+        profile.__bindgen_anon_1 = ksu_uapi::app_profile__bindgen_ty_1 { rp_config: config };
+    } else {
+        let config = ksu_uapi::app_profile__bindgen_ty_1__bindgen_ty_2 {
+            use_default: true,
+            profile: ksu_uapi::non_root_profile {
+                umount_modules: true,
+            },
+        };
+        profile.__bindgen_anon_1 = ksu_uapi::app_profile__bindgen_ty_1 { nrp_config: config };
+    }
+
+    let mut command = ksu_uapi::ksu_set_app_profile_cmd { profile };
+    ksuctl(ksu_uapi::KSU_IOCTL_SET_APP_PROFILE, &raw mut command)?;
+    Ok(())
+}
+
 pub fn is_late_load() -> bool {
     get_info().flags & ksu_uapi::KSU_GET_INFO_FLAG_LATE_LOAD != 0
 }

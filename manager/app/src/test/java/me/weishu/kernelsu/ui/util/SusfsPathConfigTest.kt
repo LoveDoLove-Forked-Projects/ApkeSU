@@ -98,7 +98,9 @@ class SusfsPathConfigTest {
         assertEquals(SusfsVersion(1, 5, 2), parseSusfsVersion("v1.5.2-R28"))
         assertEquals(
             setOf("CONFIG_KSU_SUSFS_SUS_PATH", "CONFIG_KSU_SUSFS_SUS_MOUNT"),
-            parseSusfsFeatureNames("CONFIG_KSU_SUSFS_SUS_PATH\nCONFIG_KSU_SUSFS_SUS_MOUNT"),
+            parseSusfsFeatureNames(
+                "[enabled] CONFIG_KSU_SUSFS_SUS_PATH=y\nCONFIG_KSU_SUSFS_SUS_MOUNT: y",
+            ),
         )
     }
 
@@ -147,7 +149,7 @@ class SusfsPathConfigTest {
     }
 
     @Test
-    fun successfulEmptyFeatureProbeDoesNotFallBackToLegacySupport() {
+    fun successfulEmptyFeatureProbeFallsBackToVersionCapabilities() {
         val capabilities = buildSusfsCapabilities(
             toolAvailable = true,
             versionText = "v2.1.0",
@@ -155,11 +157,48 @@ class SusfsPathConfigTest {
             featureProbeSucceeded = true,
         )
 
-        assertTrue(capabilities.featureProbeAvailable)
-        assertFalse(capabilities.supportsAddSusPath)
-        assertFalse(capabilities.supportsPathLoop)
-        assertFalse(capabilities.supportsTryUmount)
-        assertFalse(capabilities.supportsKstat)
+        assertFalse(capabilities.featureProbeAvailable)
+        assertTrue(capabilities.supportsAddSusPath)
+        assertTrue(capabilities.supportsPathLoop)
+        assertTrue(capabilities.supportsTryUmount)
+        assertTrue(capabilities.supportsKstat)
+    }
+
+    @Test
+    fun readsLegacyModuleRuntimePolicyWhenManagerSettingsAreMissing() {
+        val state = parseSusfsConfigOutput(
+            listOf(
+                "__TOOL__=/data/adb/ksu/bin/ksu_susfs",
+                "__LEGACY__susfs_log=1",
+                "__LEGACY__avc_log_spoofing='true'",
+                "__LEGACY__hide_sus_mnts_for_all_or_non_su_procs=2",
+            ),
+            buildSusfsCapabilities(true, "v2.1.0", "", false),
+        )
+
+        assertTrue(state.logging)
+        assertTrue(state.avcLogSpoofing)
+        assertTrue(state.hideSusMntsForNonSuProcs)
+    }
+
+    @Test
+    fun managerRuntimePolicyOverridesLegacyModulePolicy() {
+        val state = parseSusfsConfigOutput(
+            listOf(
+                "__TOOL__=/data/adb/ksu/bin/ksu_susfs",
+                "__SETTING__logging=0",
+                "__SETTING__avc_log_spoofing=0",
+                "__SETTING__hide_sus_mnts_for_non_su_procs=0",
+                "__LEGACY__susfs_log=1",
+                "__LEGACY__avc_log_spoofing=1",
+                "__LEGACY__hide_sus_mnts_for_all_or_non_su_procs=1",
+            ),
+            buildSusfsCapabilities(true, "v2.1.0", "", false),
+        )
+
+        assertFalse(state.logging)
+        assertFalse(state.avcLogSpoofing)
+        assertFalse(state.hideSusMntsForNonSuProcs)
     }
 
     @Test

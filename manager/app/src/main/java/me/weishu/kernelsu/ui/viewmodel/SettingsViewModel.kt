@@ -41,6 +41,7 @@ import me.weishu.kernelsu.ui.theme.ThemeSyncStrategy
 import me.weishu.kernelsu.ui.util.CustomNavigationIconSlot
 import me.weishu.kernelsu.ui.util.CustomPageBackgroundTarget
 import me.weishu.kernelsu.ui.util.CustomWallpaperCrop
+import me.weishu.kernelsu.ui.util.setNativeWebManagerEnabled
 import me.weishu.kernelsu.ui.util.BUILTIN_MOUNT_MODE_MAGIC
 import me.weishu.kernelsu.ui.util.BUILTIN_MOUNT_MODE_OVERLAY
 import me.weishu.kernelsu.ui.util.BUILTIN_MOUNT_VARIANT_FULL
@@ -1127,6 +1128,11 @@ class SettingsViewModel(
     fun setWebManagerAutoStart(enabled: Boolean) {
         repo.webManagerAutoStart = enabled
         _uiState.update { it.copy(webManagerAutoStart = enabled) }
+        viewModelScope.launch(Dispatchers.IO) {
+            // Keep the existing preference for APK fallback, while persisting
+            // the native daemon switch when the bundled ksud supports it.
+            setNativeWebManagerEnabled(enabled)
+        }
     }
 
     fun setSuCompatMode(mode: Int) {

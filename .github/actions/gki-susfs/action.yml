@@ -60,6 +60,9 @@ runs:
       uses: ./.github/actions/gki-set-kernel-config
       with:
         config_list: |
+          CONFIG_KSU=y
+          CONFIG_SECCOMP=y
+          CONFIG_KSU_GKI_SECCOMP_HOOK=y
           CONFIG_KSU_SUSFS=y
           CONFIG_KSU_SUSFS_SUS_PATH=y
           CONFIG_KSU_SUSFS_SUS_MOUNT=y
@@ -354,6 +357,8 @@ runs:
         test -s include/linux/susfs_def.h
         test -s drivers/kernelsu/feature/sucompat_susfs.c
         test -s drivers/kernelsu/runtime/ksud_integration_susfs.c
+        grep -q '^CONFIG_KSU=y$' arch/arm64/configs/gki_defconfig
+        grep -q '^CONFIG_SECCOMP=y$' arch/arm64/configs/gki_defconfig
         grep -q '^CONFIG_KSU_SUSFS=y$' arch/arm64/configs/gki_defconfig
         grep -q '^CONFIG_KSU_GKI_SECCOMP_HOOK=y$' arch/arm64/configs/gki_defconfig
         grep -q 'feature/sucompat_susfs.o' drivers/kernelsu/Kbuild

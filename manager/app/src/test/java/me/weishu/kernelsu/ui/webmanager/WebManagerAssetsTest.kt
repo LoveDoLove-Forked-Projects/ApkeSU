@@ -167,16 +167,16 @@ class WebManagerAssetsTest {
 
     @Test
     fun detectsImageTypesFromMagicBytes() {
-        assertEquals("image/png", WebManagerAssets.guessImageMime(byteArrayOf(0x89.toByte(), 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A)))
-        assertEquals("image/jpeg", WebManagerAssets.guessImageMime(byteArrayOf(0xFF.toByte(), 0xD8.toByte(), 0xFF.toByte(), 0xE0.toByte())))
-        assertEquals("image/gif", WebManagerAssets.guessImageMime("GIF89a".toByteArray()))
+        assertEquals("image/png", WebManagerAssets.detectImageMime(byteArrayOf(0x89.toByte(), 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A)))
+        assertEquals("image/jpeg", WebManagerAssets.detectImageMime(byteArrayOf(0xFF.toByte(), 0xD8.toByte(), 0xFF.toByte(), 0xE0.toByte())))
+        assertEquals("image/gif", WebManagerAssets.detectImageMime("GIF89a".toByteArray()))
         val webp = "RIFF".toByteArray() + byteArrayOf(0x20, 0x00, 0x00, 0x00) + "WEBP".toByteArray()
-        assertEquals("image/webp", WebManagerAssets.guessImageMime(webp))
+        assertEquals("image/webp", WebManagerAssets.detectImageMime(webp))
     }
 
     @Test
-    fun unknownBytesFallBackToPng() {
-        assertEquals("image/png", WebManagerAssets.guessImageMime(byteArrayOf(1, 2, 3)))
-        assertEquals("image/png", WebManagerAssets.guessImageMime(ByteArray(0)))
+    fun unknownBytesAreRejected() {
+        assertNull(WebManagerAssets.detectImageMime(byteArrayOf(1, 2, 3)))
+        assertNull(WebManagerAssets.detectImageMime(ByteArray(0)))
     }
 }

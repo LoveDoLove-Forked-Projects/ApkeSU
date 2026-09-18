@@ -192,6 +192,9 @@ pub fn run_stage(stage: &str, block: bool) {
     // service milestones; apply_if_configured is idempotent once it is loaded.
     if matches!(stage, "service" | "boot-completed") {
         crate::pathmask::apply_if_configured();
+    }
+
+    if stage == "service" {
         // Retry features whose early hook installation did not become active.
         if let Err(e) = crate::feature::reapply_configured_features() {
             warn!("re-apply feature config failed: {e}");
@@ -200,6 +203,10 @@ pub fn run_stage(stage: &str, block: bool) {
 
     if let Err(e) = crate::module::exec_common_scripts(&format!("{stage}.d"), block) {
         warn!("Failed to exec common {stage} scripts: {e}");
+    }
+
+    if stage == "service" {
+        crate::web_manager::start_if_enabled();
     }
 
     // execute metamodule stage script first (priority)
@@ -234,6 +241,11 @@ pub fn on_boot_completed() {
         );
     }
 
+    // Older kernels release SELinux hide's policy backup from the
+    // boot-complete callback, so persisted feature state must be retried first.
+    if let Err(e) = crate::feature::reapply_configured_features() {
+        warn!("pre-boot-complete feature re-apply failed: {e}");
+    }
     ksucalls::report_boot_complete();
     info!("on_boot_completed triggered!");
 

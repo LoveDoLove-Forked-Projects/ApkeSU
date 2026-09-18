@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>ApkeSU 网页管理器</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div><span class="eyebrow">ApkeSU</span><h1 id="page-title">概览</h1></div>
+    <button id="refresh" class="icon-button" title="刷新" aria-label="刷新">↻</button>
+  </header>
+  <main id="app" class="shell">
+    <section id="overview" class="page active"><div id="status-grid" class="grid"></div><div id="device-card" class="panel"></div></section>
+    <section id="modules" class="page"><div class="section-head"><div><h2>模块</h2><p>管理已安装的模块和操作脚本</p></div><button id="modules-refresh" class="secondary">刷新</button></div><div id="module-list" class="list"></div></section>
+    <section id="superuser" class="page"><div class="section-head"><div><h2>超级用户</h2><p>按应用包名和 UID 管理授权</p></div><button id="su-refresh" class="secondary">刷新</button></div><div id="su-list" class="list"></div></section>
+    <section id="settings" class="page"><div class="section-head"><div><h2>设置</h2><p>网页管理器由 ksud 持久运行，卸载 APK 后仍可访问</p></div></div><div id="settings-card" class="panel"></div><div class="panel danger-panel"><h3>安全</h3><p>令牌只通过管理器生成的本机链接使用。需要轮换令牌时，请在 root shell 执行 <code>ksud web-manager rotate-token</code>，旧链接会立即失效。</p></div></section>
+  </main>
+  <nav class="bottom-nav" aria-label="主导航"><button data-page="overview" class="selected">概览</button><button data-page="modules">模块</button><button data-page="superuser">超级用户</button><button data-page="settings">设置</button></nav>
+  <div id="toast" role="status"></div>
+  <script src="/app.js"></script>
+</body>
+</html>

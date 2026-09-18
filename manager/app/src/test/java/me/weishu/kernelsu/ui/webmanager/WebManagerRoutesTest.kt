@@ -37,6 +37,47 @@ class WebManagerRoutesTest {
     }
 
     @Test
+    fun routePathRemovesTokenScopeBeforeClassification() {
+        assertEquals(
+            "/api/assets/wallpaper/lkm",
+            WebManagerRoutes.routePath("/w/$token/api/assets/wallpaper/lkm"),
+        )
+        assertEquals("/api/status", WebManagerRoutes.routePath("/api/status"))
+    }
+
+    @Test
+    fun rootRelativeWebUiAssetUsesAuthenticatedReferrer() {
+        assertEquals(
+            "/webui/example.module/assets/index.js",
+            WebManagerRoutes.resolveRootRelativeWebUiAsset(
+                requestPath = "/assets/index.js",
+                referrer = "http://127.0.0.1:10240/w/$token/webui/example.module/",
+                port = 10240,
+                activeToken = token,
+            ),
+        )
+        assertEquals(
+            "/w/$token/webui/example.module/",
+            WebManagerRoutes.webUiBaseUrl("/w/$token", "example.module"),
+        )
+    }
+
+    @Test
+    fun rootRelativeWebUiAssetRejectsForeignOrManagerRoutes() {
+        val referrer = "http://127.0.0.1:10240/w/$token/webui/example.module/"
+        assertNull(WebManagerRoutes.resolveRootRelativeWebUiAsset("/api/status", referrer, 10240, token))
+        assertNull(WebManagerRoutes.resolveRootRelativeWebUiAsset("/assets/app.js", referrer, 10241, token))
+        assertNull(
+            WebManagerRoutes.resolveRootRelativeWebUiAsset(
+                "/assets/app.js",
+                "http://example.com:10240/w/$token/webui/example.module/",
+                10240,
+                token,
+            ),
+        )
+    }
+
+    @Test
     fun webUiAssetMapsDirectoryRequestsToIndexHtml() {
         val root = WebManagerRoutes.resolveWebUiAsset("/webui/example.module/")
         assertTrue(root is WebManagerRoutes.AssetResolution.Asset)

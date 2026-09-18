@@ -13,10 +13,19 @@ import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import me.weishu.kernelsu.R
+import me.weishu.kernelsu.ui.util.getNativeWebManagerUrl
+import me.weishu.kernelsu.ui.util.startNativeWebManager
 
 class WebManagerService : Service() {
+    private var nativeManaged = false
+
     override fun onCreate() {
         super.onCreate()
+        nativeManaged = runCatching { getNativeWebManagerUrl() != null }.getOrDefault(false)
+        if (nativeManaged) {
+            stopSelf()
+            return
+        }
         runCatching {
             createNotificationChannel()
             // 先启动服务拿到实际端口，通知里才能显示正确的访问地址
@@ -29,16 +38,26 @@ class WebManagerService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (nativeManaged || runCatching { getNativeWebManagerUrl() != null }.getOrDefault(false)) {
+            stopSelfResult(startId)
+            return START_NOT_STICKY
+        }
+        if (intent == null && !WebManagerPreferences.isAutoStartEnabled(this)) {
+            stopSelfResult(startId)
+            return START_NOT_STICKY
+        }
         runCatching { WebManagerServer.start() }
             .onFailure {
                 Log.e(TAG, "failed to ensure web manager server is running", it)
                 stopSelfResult(startId)
             }
-        return START_STICKY
+        return if (WebManagerPreferences.isAutoStartEnabled(this)) START_STICKY else START_NOT_STICKY
     }
 
     override fun onDestroy() {
-        WebManagerServer.stop()
+        if (!nativeManaged) {
+            WebManagerServer.stop()
+        }
         super.onDestroy()
     }
 
@@ -91,6 +110,16 @@ class WebManagerService : Service() {
 
         fun openInBrowser(context: Context): Result<Unit> = runCatching {
             val applicationContext = context.applicationContext
+            // Native ksud owns the persistent server. Keep the APK service only
+            // as a compatibility fallback for older installed ksud binaries.
+            val nativeStarted = startNativeWebManager()
+            val nativeUrl = nativeStarted.takeIf { it }?.let { getNativeWebManagerUrl() }
+            if (nativeUrl != null) {
+                applicationContext.startActivity(
+                    Intent(Intent.ACTION_VIEW, Uri.parse(nativeUrl)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                )
+                return@runCatching
+            }
             val url = WebManagerServer.start()
             start(applicationContext)
             applicationContext.startActivity(

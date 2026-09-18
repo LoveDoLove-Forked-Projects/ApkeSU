@@ -12,6 +12,11 @@ mod android {
     pub const KPM_BOOT_PENDING_PATH: &str = concatcp!(KPM_DIR, ".boot_pending.json");
     pub const KPM_OPERATION_LOCK_PATH: &str = concatcp!(KPM_DIR, ".operation.lock");
     pub const KPM_POLICY_PATH: &str = concatcp!(KPM_DIR, ".policy.json");
+    pub const WEB_MANAGER_DIR: &str = concatcp!(WORKING_DIR, "webmanager/");
+    pub const WEB_MANAGER_CONFIG_PATH: &str = concatcp!(WEB_MANAGER_DIR, "config.json");
+    pub const WEB_MANAGER_STATE_PATH: &str = concatcp!(WEB_MANAGER_DIR, "state.json");
+    pub const WEB_MANAGER_LOCK_PATH: &str = concatcp!(WEB_MANAGER_DIR, "server.lock");
+    pub const WEB_MANAGER_STOP_PATH: &str = concatcp!(WEB_MANAGER_DIR, ".stop");
 
     pub const PROFILE_DIR: &str = concatcp!(WORKING_DIR, "profile/");
     pub const PROFILE_SELINUX_DIR: &str = concatcp!(PROFILE_DIR, "selinux/");

@@ -183,6 +183,19 @@ select{min-height:40px;padding:8px 10px;border:1px solid var(--line);border-radi
 .sheet-body{padding:12px 14px;overflow:auto}
 .console{margin:0;padding:12px;min-height:130px;max-height:46vh;overflow:auto;background:#0d1117;color:#d5dbe3;border-radius:11px;font:12.5px/1.55 ui-monospace,Menlo,Consolas,monospace;white-space:pre-wrap;overflow-wrap:anywhere}
 .sheet-foot{display:flex;gap:8px;flex-wrap:wrap;padding:12px 14px;border-top:1px solid var(--line)}
+.reboot-alert{padding:10px 11px;margin-bottom:10px;border-radius:10px;background:var(--warn-soft);color:var(--warn);font-size:12.5px}
+.reboot-alert.danger{background:var(--danger-soft);color:var(--danger)}
+.reboot-list{overflow:hidden;border:1px solid var(--line);border-radius:12px;background:var(--card)}
+.reboot-option{width:100%;min-height:62px;padding:10px 12px;border:0;border-bottom:1px solid var(--line);background:transparent;display:flex;align-items:center;gap:11px;text-align:left;cursor:pointer}
+.reboot-option:last-child{border-bottom:0}
+.reboot-option:active{background:var(--card-2)}
+.reboot-option:disabled{opacity:.48;cursor:not-allowed}
+.reboot-symbol{width:36px;height:36px;flex:none;border-radius:10px;background:var(--accent-soft);color:var(--accent);display:grid;place-items:center;font-size:18px;font-weight:700}
+.reboot-option.critical .reboot-symbol{background:var(--danger-soft);color:var(--danger)}
+.reboot-copy{min-width:0;flex:1 1 auto}
+.reboot-copy b{display:block;font-size:14px}
+.reboot-copy span{display:block;margin-top:2px;color:var(--muted);font-size:12px;line-height:1.4}
+.reboot-chevron{flex:none;color:var(--muted);font-size:18px}
 .toast{position:fixed;left:50%;bottom:calc(78px + env(safe-area-inset-bottom));transform:translateX(-50%);z-index:60;max-width:min(460px,calc(100vw - 28px));padding:11px 14px;border:1px solid var(--line);border-radius:11px;background:var(--card);font-size:13.5px;box-shadow:0 8px 26px rgba(0,0,0,.18)}
 .toast.err{border-color:var(--danger);color:var(--danger)}
 label.switch{display:inline-flex;align-items:center;gap:8px;flex:none}
@@ -206,6 +219,7 @@ input[type=checkbox]:focus-visible{outline:2px solid var(--accent);outline-offse
   .item-actions{width:auto;flex:none;margin-top:0}
   .sheet-panel{max-width:860px;border-radius:18px;margin-bottom:20px;max-height:78vh}
 }
+@media(max-width:430px){.topbar .pill{display:none}}
 @media(prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
 body.compact .item{padding:9px 12px}
 body.compact .item-desc{display:none}
@@ -221,6 +235,7 @@ private const val WEB_MANAGER_PAGE_MARKUP: String = """
     <div class="logo" aria-hidden="true">A</div>
     <div class="brand"><b>ApkeSU（web）</b><span id="brandSub">本机控制台 · 仅回环访问</span></div>
     <span id="statusPill" class="pill">读取中</span>
+    <button id="rebootMenu" class="iconbtn" type="button" title="重启菜单" aria-label="打开重启菜单">⏻</button>
     <button id="refreshAll" class="iconbtn" type="button" title="刷新数据" aria-label="刷新数据">⟳</button>
   </div>
 </header>
@@ -449,8 +464,8 @@ private const val WEB_MANAGER_PAGE_MARKUP: String = """
       </div>
       <div class="card">
         <div class="row">
-          <div class="row-main"><div class="row-title">软重启</div><div class="row-detail">重启 Android 框架而不重启内核（模块更新后常用）</div></div>
-          <button class="btn small danger" type="button" id="softRebootBtn">执行</button>
+          <div class="row-main"><div class="row-title">重启设备</div><div class="row-detail">正常重启、用户空间、软重启与启动模式</div></div>
+          <button class="btn small" type="button" id="rebootMenuSettings">打开菜单</button>
         </div>
       </div>
     </details>
@@ -514,7 +529,7 @@ private const val WEB_MANAGER_PAGE_MARKUP: String = """
   <button type="button" data-view="settings"><span class="ico" aria-hidden="true">⚙</span>设置</button>
 </nav>
 
-<div id="kpmDialog" class="sheet hidden" role="dialog" aria-modal="true" aria-label="KPM 操作">
+<div id="kpmDialog" class="sheet hidden" role="dialog" aria-modal="true" aria-label="操作面板">
   <div class="sheet-panel">
     <div class="sheet-head">
       <div class="row-main"><h2 id="kpmDialogTitle">KPM 操作</h2></div>
@@ -589,6 +604,9 @@ private const val WEB_MANAGER_PAGE_SCRIPT_HEAD: String = """<script>
     assets: { wallpapers: {}, navIcons: {}, moduleWallpapers: {} },
     tools: null,
     toolsLoaded: false,
+    rebootStatus: null,
+    rebootPending: false,
+    rebootMenuRequest: 0,
     assetCatalog: { wallpaperTargets: {}, navIconSlots: {} },
     assetPickTarget: null,
     assetAdjustTarget: null,
@@ -757,7 +775,8 @@ private const val WEB_MANAGER_PAGE_SCRIPT_HEAD: String = """<script>
     setInfoRow("infoKpmRow", data.kpm);
     setInfoRow("infoSusfsRow", data.susfs);
     el("infoManager").textContent = "ApkeSU " + (device.managerVersionName || "-") +
-      "（" + (device.managerVersionCode || "-") + "） · 接口 v" + (data.apiVersion || "-");
+      "（" + (device.managerVersionCode || "-") + "） · 接口 v" + (data.apiVersion || "-") +
+      (data.stale ? " · 状态来自缓存" : "");
     if (data.port) el("infoAddress").textContent = "127.0.0.1:" + data.port;
   }
 
@@ -982,6 +1001,7 @@ private const val WEB_MANAGER_PAGE_SCRIPT_HEAD: String = """<script>
     device: "infoCard"
   };
   var NAV_ICON_SLOTS = ["home", "superuser", "module", "kpm", "settings"];
+  var NAV_ICON_VIEWS = { home: "home", superuser: "superuser", module: "modules", kpm: "kpm", settings: "settings" };
 
   /** 把某张卡片的壁纸（含缩放/偏移/变暗/模糊）贴到 DOM 上；没有壁纸就撤掉。 */
   function applyWallpaper(target) {
@@ -1020,7 +1040,7 @@ private const val WEB_MANAGER_PAGE_SCRIPT_HEAD: String = """<script>
   }
 
   function applyNavIcon(slot) {
-    var button = document.querySelector('.navbar button[data-view="' + slot + '"]');
+    var button = document.querySelector('.navbar button[data-view="' + (NAV_ICON_VIEWS[slot] || slot) + '"]');
     if (!button) return;
     var icon = button.querySelector(".ico");
     if (!icon) return;
@@ -1487,6 +1507,7 @@ private const val WEB_MANAGER_PAGE_SCRIPT_HEAD: String = """<script>
   }
 
   function closeSheet() {
+    state.rebootMenuRequest += 1;
     el("kpmDialog").classList.add("hidden");
     el("kpmDialogBody").innerHTML = "";
     el("kpmDialogFoot").innerHTML = "";
@@ -1974,6 +1995,100 @@ private const val WEB_MANAGER_PAGE_SCRIPT_TOOLS: String = """  // --------------
     return loadTools().catch(function () { /* 卡片内已提示 */ });
   }
 
+  var REBOOT_OPTIONS = [
+    { mode: "system", symbol: "↻", title: "正常重启", detail: "完整重启 Android 与内核", confirm: "确认正常重启设备？所有正在运行的应用会关闭。" },
+    { mode: "userspace", symbol: "◫", title: "用户空间重启", detail: "只重启 Android 用户空间，不重启内核", confirm: "确认执行用户空间重启？Android 用户空间和应用会重新启动。" },
+    { mode: "soft", symbol: "◎", title: "软重启", detail: "重启 Android 框架，适合模块更新后使用", confirm: "确认软重启 Android 框架？正在运行的应用会重新启动。" },
+    { mode: "recovery", symbol: "+", title: "Recovery", detail: "重启进入恢复模式", confirm: "确认重启到 Recovery？设备将离开当前系统。", critical: true },
+    { mode: "bootloader", symbol: "B", title: "Bootloader", detail: "重启进入引导加载程序 / Fastboot", confirm: "确认重启到 Bootloader？设备将进入引导加载程序。", critical: true },
+    { mode: "download", symbol: "↓", title: "Download 模式", detail: "主要用于支持该模式的三星设备", confirm: "确认进入 Download 模式？不支持该模式的设备可能只会正常重启。", critical: true },
+    { mode: "edl", symbol: "!", title: "EDL 紧急下载", detail: "仅适用于支持 EDL 的部分高通设备", confirm: "确认进入 EDL 紧急下载模式？设备可能黑屏，并需要专用工具才能退出。", critical: true }
+  ];
+
+  function rebootOption(mode) {
+    return REBOOT_OPTIONS.find(function (item) { return item.mode === mode; });
+  }
+
+  function renderRebootMenu(status) {
+    state.rebootStatus = status || {};
+    var available = state.rebootStatus.available !== false && !state.rebootStatus.pending;
+    var options = REBOOT_OPTIONS.filter(function (item) {
+      return item.mode !== "userspace" || !!state.rebootStatus.userspaceSupported;
+    });
+    var alert = "";
+    if (state.rebootStatus.pending) {
+      alert = '<div class="reboot-alert">已有重启请求正在执行，请勿重复操作。</div>';
+    } else if (state.rebootStatus.available === false) {
+      alert = '<div class="reboot-alert danger">root shell 不可用，当前不能发送重启命令。</div>';
+    } else if (state.rebootStatus.lateLoad) {
+      alert = '<div class="reboot-alert">当前为晚加载 / 越狱模式。正常重启后可能需要重新执行越狱流程才能恢复 root。</div>';
+    }
+    var body = alert + '<div class="reboot-list">' + options.map(function (item) {
+      return '<button class="reboot-option' + (item.critical ? " critical" : "") + '" type="button" ' +
+        'data-reboot-mode="' + item.mode + '"' + (available ? "" : " disabled") + '>' +
+        '<span class="reboot-symbol" aria-hidden="true">' + item.symbol + '</span>' +
+        '<span class="reboot-copy"><b>' + item.title + '</b><span>' + item.detail + '</span></span>' +
+        '<span class="reboot-chevron" aria-hidden="true">›</span></button>';
+    }).join("") + "</div>";
+    openSheet(
+      "重启设备",
+      body,
+      '<button class="btn small" type="button" data-kpm-dialog="close">取消</button>'
+    );
+  }
+
+  function openRebootMenu() {
+    var requestId = ++state.rebootMenuRequest;
+    openSheet(
+      "重启设备",
+      '<div class="state"><b>正在检查设备能力</b>请稍候……</div>',
+      '<button class="btn small" type="button" data-kpm-dialog="close">取消</button>'
+    );
+    api("/api/tools/reboot", { timeout: 10000 }).then(function (status) {
+      if (requestId !== state.rebootMenuRequest || el("kpmDialog").classList.contains("hidden")) return;
+      renderRebootMenu(status);
+    }).catch(function (error) {
+      if (requestId !== state.rebootMenuRequest || el("kpmDialog").classList.contains("hidden")) return;
+      openSheet(
+        "重启设备",
+        '<div class="state"><b>无法读取重启能力</b>' + esc(error.message || "未知错误") + '</div>',
+        '<button class="btn small" type="button" id="rebootRetry">重试</button>' +
+          '<button class="btn small" type="button" data-kpm-dialog="close">关闭</button>'
+      );
+    });
+  }
+
+  function requestReboot(mode) {
+    var option = rebootOption(mode);
+    if (!option || state.rebootPending) return;
+    var confirmation = option.confirm;
+    if (mode === "system" && state.rebootStatus && state.rebootStatus.lateLoad) {
+      confirmation += "\n\n当前为晚加载 / 越狱模式，重启后可能失去 root。";
+    }
+    if (!window.confirm(confirmation)) return;
+
+    state.rebootPending = true;
+    document.querySelectorAll("[data-reboot-mode]").forEach(function (button) { button.disabled = true; });
+    var startedAt = Date.now();
+    kpmPost("/api/tools/reboot", { mode: mode }, 10000).then(function () {
+      closeSheet();
+      notify("已发送“" + option.title + "”请求，设备即将重启");
+      record("重启请求：" + option.title);
+    }).catch(function (error) {
+      if (!error.code && Date.now() - startedAt >= 300) {
+        closeSheet();
+        notify("连接已中断，设备可能正在执行“" + option.title + "”");
+        record("重启连接中断：" + option.title);
+      } else {
+        notify("重启请求失败：" + (error.message || "未知错误") + (error.code ? " [" + error.code + "]" : ""), true);
+        record("重启请求失败：" + option.title, true);
+        document.querySelectorAll("[data-reboot-mode]").forEach(function (button) { button.disabled = false; });
+      }
+    }).finally(function () {
+      state.rebootPending = false;
+    });
+  }
+
   // ------------------------------------------------------ 模块卡片自定义壁纸
 
   function applyModuleWallpaper(moduleId, card) {
@@ -2076,7 +2191,8 @@ private const val WEB_MANAGER_PAGE_SCRIPT_TAIL: String = """
     el("superuserStats").textContent = "UID " + state.appStats.uidCount + " 个 · 应用 " +
       state.appStats.totalApps + " 个 · 已授权 " + state.appStats.authorizedCount + " 个" +
       (state.appStats.source === "root" ? " · 来源：Root 服务"
-        : state.appStats.source === "local" ? " · 来源：本机包管理器（兜底）" : "");
+        : state.appStats.source === "local" ? " · 来源：本机包管理器（兜底）"
+        : state.appStats.source === "root+local" ? " · 来源：本机与 Root 合并" : "");
     if (!state.appLoaded) {
       box.innerHTML = state.appLoading
         ? '<div class="state"><b>正在读取应用列表</b>首次读取需要查询 Root 服务，可能需要十几秒。</div>'
@@ -2315,7 +2431,7 @@ private const val WEB_MANAGER_PAGE_SCRIPT_TAIL: String = """
 
   function openConsole(module, jobId) {
     state.jobModule = module;
-    state.job = jobId ? { id: jobId, offset: 0 } : null;
+    state.job = jobId ? { id: jobId, offset: 0, truncatedNotified: false } : null;
     el("sheetTitle").textContent = "执行：" + (module ? module.name : "模块脚本");
     el("consoleOut").textContent = jobId ? "正在读取输出……\n" : "正在启动脚本……\n";
     el("sheet").classList.remove("hidden");
@@ -2348,13 +2464,19 @@ private const val WEB_MANAGER_PAGE_SCRIPT_TAIL: String = """
 
   function pollJob() {
     if (!state.job) return;
-    api("/api/jobs/" + encodeURIComponent(state.job.id) + "?offset=" + state.job.offset, { timeout: 20000 })
+    var activeJob = state.job;
+    var activeJobId = activeJob.id;
+    api("/api/jobs/" + encodeURIComponent(activeJobId) + "?offset=" + activeJob.offset, { timeout: 20000 })
       .then(function (job) {
+        if (!state.job || state.job.id !== activeJobId) return;
         if (job.output) {
           appendOutput(job.output);
-          state.job.offset = job.offset;
         }
-        if (job.truncated) appendOutput("\n[输出过多，已截断]\n");
+        state.job.offset = job.offset;
+        if (job.truncated && !state.job.truncatedNotified) {
+          appendOutput("\n[输出过多，已截断]\n");
+          state.job.truncatedNotified = true;
+        }
         var label = jobStateLabel(job);
         el("sheetState").textContent = label[0];
         el("sheetState").className = label[1];
@@ -2368,6 +2490,7 @@ private const val WEB_MANAGER_PAGE_SCRIPT_TAIL: String = """
         }
       })
       .catch(function (error) {
+        if (!state.job || state.job.id !== activeJobId) return;
         appendOutput("\n[轮询失败] " + error.message + "\n");
         state.jobTimer = setTimeout(pollJob, 2500);
       });
@@ -2378,7 +2501,8 @@ private const val WEB_MANAGER_PAGE_SCRIPT_TAIL: String = """
     openConsole(module || { id: id, name: id }, null);
     api("/api/modules/" + encodeURIComponent(id) + "/action", { method: "POST", timeout: 25000 })
       .then(function (data) {
-        state.job = { id: data.jobId, offset: 0 };
+        if (el("sheet").classList.contains("hidden")) return;
+        state.job = { id: data.jobId, offset: 0, truncatedNotified: false };
         pollJob();
       })
       .catch(function (error) {
@@ -2552,6 +2676,9 @@ private const val WEB_MANAGER_PAGE_SCRIPT_TAIL: String = """
         if (dialogAction.dataset.kpmDialog === "close") closeSheet();
         return;
       }
+      var rebootAction = event.target.closest("[data-reboot-mode]");
+      if (rebootAction) { requestReboot(rebootAction.dataset.rebootMode); return; }
+      if (event.target.closest("#rebootRetry")) { openRebootMenu(); return; }
       if (event.target.closest("#kpmControlRun")) { runKpmControl(); return; }
       if (event.target.closest("#kpmImportConfirm")) { runKpmImport(); return; }
       if (event.target.closest("#kpmRemoveConfirm")) {
@@ -2571,8 +2698,14 @@ private const val WEB_MANAGER_PAGE_SCRIPT_TAIL: String = """
         } else if (toggleKind === "kpatch") {
           runToolAction("kpatch", { enabled: toggleOn }, null).then(afterToolAction).catch(afterToolAction);
         } else if (toggleKind === "pathmaskAutoLoad") {
-          var delay = window.prompt("开机延迟多少秒后应用？（0 = 立即）", "0");
-          if (delay === null) { toggleOn = !toggleOn; }
+          var delay = "0";
+          if (toggleOn) {
+            delay = window.prompt("开机延迟多少秒后应用？（0 = 立即）", "0");
+            if (delay === null) {
+              toolToggle.checked = false;
+              return;
+            }
+          }
           runToolAction("pathmask", { action: "autoLoad", enabled: toggleOn, delaySeconds: Number(delay) || 0 }, null)
             .then(afterToolAction).catch(afterToolAction);
         }
@@ -2706,11 +2839,14 @@ private const val WEB_MANAGER_PAGE_SCRIPT_TAIL: String = """
     el("kpmDialogClose").addEventListener("click", closeSheet);
     el("themeSelect").addEventListener("change", function (event) {
       var theme = event.target.value;
+      var previousTheme = state.theme;
       applyTheme(theme);
       kpmPost("/api/settings/theme", { theme: theme }, 20000).then(function () {
         notify("界面主题已切换：" + (theme === "auto" ? "跟随系统" : theme === "light" ? "浅色" : "深色"));
         record("界面主题：" + theme);
       }).catch(function (error) {
+        applyTheme(previousTheme);
+        el("themeSelect").value = previousTheme;
         notify("主题保存失败：" + (error.message || "未知错误"), true);
       });
     });
@@ -2785,18 +2921,16 @@ private const val WEB_MANAGER_PAGE_SCRIPT_TAIL: String = """
     el("languageSelect").addEventListener("change", function (event) {
       var tag = event.target.value;
       kpmPost("/api/settings/language", { tag: tag }, 20000).then(function () {
+        event.target.dataset.current = tag;
         notify("管理器语言已切换为 " + tag + "（原生管理器界面生效）");
         record("管理器语言：" + tag);
       }).catch(function (error) {
+        event.target.value = event.target.dataset.current || "zh-CN";
         notify("语言切换失败：" + (error.message || "未知错误"), true);
       });
     });
-    el("softRebootBtn").addEventListener("click", function () {
-      if (!window.confirm("软重启 Android 框架？正在运行的应用会重启，内核不会重启。")) return;
-      runToolAction("soft-reboot", {}, null).then(function () {
-        notify("已请求软重启，系统即将重启框架");
-      }).catch(function () { /* 已提示 */ });
-    });
+    el("rebootMenu").addEventListener("click", openRebootMenu);
+    el("rebootMenuSettings").addEventListener("click", openRebootMenu);
     el("assetFileInput").addEventListener("change", function (event) {
       var file = event.target.files && event.target.files[0];
       if (file) uploadAsset(file);

@@ -95,8 +95,8 @@ internal object WebManagerAssets {
         return normalizeMeta(kind, raw, raw.optLong("updatedAt", updatedAt))
     }
 
-    /** 由文件头识别图片类型；识别不出来时按 PNG 处理（浏览器一般仍能显示）。 */
-    fun guessImageMime(bytes: ByteArray): String {
+    /** 由文件头识别允许的图片类型，未知内容必须在落盘前拒绝。 */
+    fun detectImageMime(bytes: ByteArray): String? {
         if (bytes.size >= 3 &&
             bytes[0] == 0xFF.toByte() && bytes[1] == 0xD8.toByte() && bytes[2] == 0xFF.toByte()
         ) {
@@ -119,7 +119,7 @@ internal object WebManagerAssets {
         if (bytes.size >= 6 && bytes[0] == 0x47.toByte() && bytes[1] == 0x49.toByte() && bytes[2] == 0x46.toByte()) {
             return "image/gif"
         }
-        return "image/png"
+        return null
     }
 
     private fun clampDouble(value: Double, min: Double, max: Double): Double {

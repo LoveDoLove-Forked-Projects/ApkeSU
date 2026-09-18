@@ -91,7 +91,10 @@ internal val WEBUI_BRIDGE_SCRIPT_TEMPLATE: String = """
       return;
     }
     if (typeof callback === "function") {
-      request.then(function (result) { callback(result.errno, result.stdout || "", result.stderr || ""); });
+      request.then(
+        function (result) { callback(result.errno, result.stdout || "", result.stderr || ""); },
+        function (error) { callback(error.errno || 126, "", error.message || "WebUI command failed"); }
+      );
       return;
     }
     return request;
@@ -157,7 +160,11 @@ internal val WEBUI_BRIDGE_SCRIPT_TEMPLATE: String = """
     document.documentElement.dataset.apkesuEdgeToEdge = enable ? "true" : "false";
   };
   ksu.exit = function () {
-    try { history.back(); } catch (_) { location.href = "/"; }
+    if (history.length > 1) {
+      history.back();
+    } else {
+      location.href = tokenPrefix + "/";
+    }
   };
   window.ksu = ksu;
 

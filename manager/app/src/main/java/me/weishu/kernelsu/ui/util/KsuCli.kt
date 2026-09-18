@@ -750,6 +750,23 @@ fun execKsud(
     }
 }
 
+/** Starts the persistent native web manager when the bundled ksud supports it. */
+fun startNativeWebManager(): Boolean = execKsud("web-manager start", newShell = true)
+
+/** Enables or disables the persistent native web manager. */
+fun setNativeWebManagerEnabled(enabled: Boolean): Boolean =
+    execKsud("web-manager ${if (enabled) "enable" else "disable"}", newShell = true)
+
+/** Returns the authenticated native URL, or null when this ksud is too old/unavailable. */
+fun getNativeWebManagerUrl(): String? = runCatching {
+    if (shouldSkipUnsafeKsudCommand()) return@runCatching null
+    val output = ShellUtils.fastCmd(
+        getRootShell(),
+        "${shellQuote(getKsuDaemonPath())} web-manager url",
+    ).trim()
+    output.takeIf { it.startsWith("http://127.0.0.1:") && it.contains("/w/") }
+}.getOrNull()
+
 suspend fun getBuiltinMountStatus(): BuiltinMountStatus = withContext(Dispatchers.IO) {
     if (shouldSkipUnsafeKsudCommand()) {
         return@withContext BuiltinMountStatus()
@@ -2077,6 +2094,7 @@ internal data class SusfsVersion(
 )
 
 private val susfsVersionPattern = Regex("(?:^|[^0-9])v?(\\d+)\\.(\\d+)\\.(\\d+)")
+private val susfsFeaturePattern = Regex("CONFIG_KSU_SUSFS_[A-Z0-9_]+")
 
 internal fun parseSusfsVersion(raw: String): SusfsVersion? {
     val match = susfsVersionPattern.find(raw.trim()) ?: return null
@@ -2087,12 +2105,15 @@ internal fun parseSusfsVersion(raw: String): SusfsVersion? {
     )
 }
 
-internal fun parseSusfsFeatureNames(raw: String): Set<String> = raw
-    .split(Regex("[\\s,]+"))
-    .asSequence()
-    .map(String::trim)
-    .filter { it.startsWith("CONFIG_KSU_SUSFS_") }
+internal fun parseSusfsFeatureNames(raw: String): Set<String> = susfsFeaturePattern
+    .findAll(raw)
+    .map(MatchResult::value)
     .toSet()
+
+private fun parseSusfsPolicyBoolean(raw: String): Boolean {
+    val value = raw.trim().trim('\'', '"').substringBefore('#').trim()
+    return value == "1" || value == "2" || value.equals("true", ignoreCase = true)
+}
 
 private fun JSONObject.firstString(vararg names: String): String = names
     .asSequence()
@@ -2260,6 +2281,7 @@ internal fun parseSusfsConfigOutput(
     fun value(prefix: String): String = lines.firstOrNull { it.startsWith(prefix) }
         ?.substringAfter('=').orEmpty().trim()
     fun setting(name: String): String = value("__SETTING__$name=")
+    fun legacySetting(name: String): String = value("__LEGACY__$name=")
     fun status(name: String): String = value("__STATUS__$name=")
     fun values(prefix: String): List<String> = lines.asSequence()
         .filter { it.startsWith(prefix) }
@@ -2314,9 +2336,13 @@ internal fun parseSusfsConfigOutput(
         openRedirects = redirects,
         kstatEntries = kstats,
         enabled = setting("enabled") != "0",
-        logging = setting("logging") == "1",
-        avcLogSpoofing = setting("avc_log_spoofing") == "1",
-        hideSusMntsForNonSuProcs = setting("hide_sus_mnts_for_non_su_procs") == "1",
+        logging = setting("logging").ifBlank { legacySetting("susfs_log") }
+            .let(::parseSusfsPolicyBoolean),
+        avcLogSpoofing = setting("avc_log_spoofing").ifBlank { legacySetting("avc_log_spoofing") }
+            .let(::parseSusfsPolicyBoolean),
+        hideSusMntsForNonSuProcs = setting("hide_sus_mnts_for_non_su_procs")
+            .ifBlank { legacySetting("hide_sus_mnts_for_all_or_non_su_procs") }
+            .let(::parseSusfsPolicyBoolean),
         unameRelease = setting("uname_release"),
         unameVersion = setting("uname_version"),
         cmdlineOrBootconfig = setting("cmdline_or_bootconfig"),
@@ -2444,31 +2470,32 @@ internal fun buildSusfsCapabilities(
 ): SusfsCapabilities {
     val version = parseSusfsVersion(versionText)
     val features = parseSusfsFeatureNames(featureText)
+    val effectiveFeatureProbe = featureProbeSucceeded && features.isNotEmpty()
     fun has(feature: String): Boolean = feature in features
     return SusfsCapabilities(
         version = versionText.trim(),
         features = features,
-        featureProbeAvailable = featureProbeSucceeded,
-        supportsAddSusPath = toolAvailable && (!featureProbeSucceeded || has(SUSFS_PATH_FEATURE)),
+        featureProbeAvailable = effectiveFeatureProbe,
+        supportsAddSusPath = toolAvailable && (!effectiveFeatureProbe || has(SUSFS_PATH_FEATURE)),
         // add_sus_path_loop is part of the SUS_PATH capability in SUSFS v2.x.
         supportsPathLoop = has(SUSFS_PATH_FEATURE) ||
-            (!featureProbeSucceeded && version?.atLeast(1, 5, 9) == true),
+            (!effectiveFeatureProbe && version?.atLeast(1, 5, 9) == true),
         supportsTryUmount = has(SUSFS_MOUNT_FEATURE) ||
-            (!featureProbeSucceeded && version?.atLeast(1, 5, 3) == true),
+            (!effectiveFeatureProbe && version?.atLeast(1, 5, 3) == true),
         supportsKstat = has(SUSFS_KSTAT_FEATURE) ||
-            (!featureProbeSucceeded && version?.atLeast(2, 0, 0) == true),
+            (!effectiveFeatureProbe && version?.atLeast(2, 0, 0) == true),
         supportsOpenRedirect = has(SUSFS_OPEN_REDIRECT_FEATURE),
         supportsSusMap = has(SUSFS_MAP_FEATURE),
         supportsUnameSpoof = has(SUSFS_UNAME_FEATURE) ||
-            (!featureProbeSucceeded && version?.atLeast(1, 5, 0) == true),
+            (!effectiveFeatureProbe && version?.atLeast(1, 5, 0) == true),
         supportsCmdlineSpoof = has(SUSFS_CMDLINE_FEATURE) ||
-            (!featureProbeSucceeded && version?.atLeast(1, 5, 4) == true),
+            (!effectiveFeatureProbe && version?.atLeast(1, 5, 4) == true),
         supportsLogging = has(SUSFS_LOG_FEATURE) ||
-            (!featureProbeSucceeded && version?.atLeast(1, 5, 0) == true),
+            (!effectiveFeatureProbe && version?.atLeast(1, 5, 0) == true),
         // These commands are runtime ABI operations and are version gated.
         supportsAvcLogSpoofing = version?.atLeast(1, 5, 3) == true,
         supportsHideSusMounts = has(SUSFS_MOUNT_FEATURE) ||
-            (!featureProbeSucceeded && version?.atLeast(1, 5, 7) == true),
+            (!effectiveFeatureProbe && version?.atLeast(1, 5, 7) == true),
     )
 }
 
@@ -2568,7 +2595,7 @@ suspend fun getSusfsPathConfig(): SusfsPathConfigState = withContext(Dispatchers
         appendLine("feature_probe=0")
         appendLine("if [ -n \"${'$'}tool\" ]; then")
         appendLine("  version=\"${'$'}(\"${'$'}tool\" show version 2>/dev/null | sed -n '1p')\"")
-        appendLine("  if feature_output=\"${'$'}(\"${'$'}tool\" show enabled_features 2>/dev/null)\"; then")
+        appendLine("  if feature_output=\"${'$'}(\"${'$'}tool\" show enabled_features 2>/dev/null)\" && printf '%s' \"${'$'}feature_output\" | grep -q 'CONFIG_KSU_SUSFS_'; then")
         appendLine("    feature_probe=1")
         appendLine("    features=\"${'$'}(printf '%s' \"${'$'}feature_output\" | tr '\\n' ' ')\"")
         appendLine("  else")
@@ -2582,6 +2609,12 @@ suspend fun getSusfsPathConfig(): SusfsPathConfigState = withContext(Dispatchers
         appendLine("  setting_value=")
         appendLine("  if [ -f \"${'$'}config_dir/settings.conf\" ]; then setting_value=\$(sed -n \"s/^${'$'}setting=//p\" \"${'$'}config_dir/settings.conf\" | sed -n '1p'); fi")
         appendLine("  printf '__SETTING__%s=%s\\n' \"${'$'}setting\" \"${'$'}setting_value\"")
+        appendLine("done")
+        appendLine("legacy_config=/data/adb/susfs4ksu/config.sh")
+        appendLine("for setting in susfs_log avc_log_spoofing hide_sus_mnts_for_all_or_non_su_procs; do")
+        appendLine("  legacy_value=")
+        appendLine("  if [ -f \"${'$'}legacy_config\" ]; then legacy_value=\$(sed -n \"s/^${'$'}setting=//p\" \"${'$'}legacy_config\" | sed -n '1p'); fi")
+        appendLine("  printf '__LEGACY__%s=%s\\n' \"${'$'}setting\" \"${'$'}legacy_value\"")
         appendLine("done")
         appendLine("if [ -f \"${'$'}config_dir/paths.txt\" ]; then")
         appendLine("  while IFS= read -r target_path; do")
@@ -3067,7 +3100,7 @@ skip_entry() {
     record_issue skipped "${'$'}1" "${'$'}2" "${'$'}3"
 }
 feature_enabled() {
-    [ "${'$'}FEATURE_PROBE_OK" -eq 1 ] && printf '%s\n' "${'$'}SUSFS_FEATURES" | grep -qxF "${'$'}1"
+    [ "${'$'}FEATURE_PROBE_OK" -eq 1 ] && printf '%s\n' "${'$'}SUSFS_FEATURES" | grep -qF "${'$'}1"
 }
 version_code() {
     version_triplet=${'$'}(printf '%s\n' "${'$'}TOOL_VERSION" | sed -n 's/^[^0-9]*\([0-9][0-9]*\)\.\([0-9][0-9]*\)\.\([0-9][0-9]*\).*/\1 \2 \3/p')
@@ -3101,7 +3134,8 @@ probe_tool() {
     PROBED=1
     PROBE_SUPPORTED=0
     TOOL_VERSION=${'$'}("${'$'}TOOL" show version 2>/dev/null | sed -n '1p')
-    if SUSFS_FEATURES=${'$'}("${'$'}TOOL" show enabled_features 2>/dev/null); then
+    if SUSFS_FEATURES=${'$'}("${'$'}TOOL" show enabled_features 2>/dev/null) &&
+        printf '%s\n' "${'$'}SUSFS_FEATURES" | grep -q 'CONFIG_KSU_SUSFS_'; then
         FEATURE_PROBE_OK=1
     else
         FEATURE_PROBE_OK=0

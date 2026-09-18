@@ -76,6 +76,8 @@ mod sulog;
 mod unload;
 #[cfg(target_os = "android")]
 mod utils;
+#[cfg(target_os = "android")]
+mod web_manager;
 
 fn main() -> anyhow::Result<()> {
     #[cfg(target_os = "android")]
