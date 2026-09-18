@@ -15,6 +15,9 @@ class SusfsPathConfigTest {
         assertEquals("/data/local/tmp/example", normalizeSusfsPath("  /data/local/tmp/example/  "))
         assertEquals("/storage/emulated/0/Android/data/example", normalizeSusfsPath("/storage/emulated/0/Android/data/example"))
         assertEquals("/data/adb/custom", normalizeSusfsPath("/data/adb/custom"))
+        assertEquals("/data/local/example", normalizeSusfsPath("/data//local/./tmp/../example"))
+        assertNull(normalizeSusfsPath("/data/../../system"))
+        assertEquals("/data/local/é", normalizeSusfsPath("/data/local/é"))
     }
 
     @Test
@@ -26,6 +29,8 @@ class SusfsPathConfigTest {
         assertNull(normalizeSusfsPath("/data/adb/ksu/bin"))
         assertNull(normalizeSusfsPath("/data/adb/ap"))
         assertNull(normalizeSusfsPath(""))
+        assertEquals("/" + "a".repeat(254), normalizeSusfsPath("/" + "a".repeat(254)))
+        assertNull(normalizeSusfsPath("/" + "a".repeat(255)))
     }
 
     @Test
@@ -37,13 +42,27 @@ class SusfsPathConfigTest {
         assertTrue(service.contains("PROBED=0"))
         assertTrue(service.contains("PROBE_SUPPORTED=0"))
         assertTrue(service.contains("FEATURE_PROBE_OK=0"))
-        assertTrue(service.contains("while [ \"\$attempt\" -lt 30 ]; do"))
-        assertTrue(service.contains("while [ \"\$storage_attempt\" -lt 100 ]"))
+        assertTrue(service.contains("while [ \"\$attempt\" -lt \"\$MAX_ATTEMPTS\" ]; do"))
+        assertTrue(service.contains("while [ \"\$storage_attempt\" -lt \"\$STORAGE_ATTEMPTS\" ]"))
+        assertTrue(service.contains("if [ \"\$MODE\" = \"--immediate\" ]; then"))
         assertTrue(service.contains("set_sdcard_root_path /sdcard"))
         assertTrue(service.contains("set_android_data_root_path /sdcard/Android/data"))
         assertTrue(service.contains("/storage/emulated/*"))
-        assertTrue(service.contains("apply_path_file \"\$CONFIG\" add_sus_path || failed=1"))
-        assertTrue(service.contains("\"\$TOOL\" \"\$command\" \"\$target_path\" >/dev/null 2>&1"))
+        assertTrue(service.contains("apply_path_file \"\$CONFIG\" add_sus_path path 1"))
+        assertTrue(service.contains("run_tool \"\$category\" \"\$target_path\" \"\$command\""))
+        assertTrue(service.contains("write_status"))
+        assertTrue(service.contains("generation_is_current()"))
+        assertTrue(service.contains("generation_is_current || return 125"))
+        assertTrue(service.contains("discarded stale status for generation"))
+        assertTrue(service.contains("[ \"\$FEATURE_PROBE_OK\" -eq 0 ] && supports_version 20000"))
+        assertTrue(service.contains("[ \"\$FEATURE_PROBE_OK\" -eq 0 ] && supports_version 10500"))
+        assertTrue(service.contains("[ \"\$FEATURE_PROBE_OK\" -eq 0 ] && supports_version 10504"))
+        assertTrue(service.contains("[ \"\$FEATURE_PROBE_OK\" -eq 0 ] && supports_version 10507"))
+        assertTrue(service.contains("[ \"\$MODE\" = \"--immediate\" ] || REQUIRES_REBOOT=0"))
+        assertTrue(service.contains("[ \"\$SKIPPED_COUNT\" -gt 0 ]"))
+        assertFalse(service.contains("hide_sus_mnts_for_all_procs"))
+        assertFalse(service.contains("command -v ksu_susfs"))
+        assertTrue(service.contains("0\$mode & 022"))
         assertTrue(service.contains("sleep 1"))
         assertFalse(service.contains("\\$("))
         assertFalse(service.contains("\\\""))
@@ -78,8 +97,8 @@ class SusfsPathConfigTest {
     fun parsesR28VersionAndFeatureNames() {
         assertEquals(SusfsVersion(1, 5, 2), parseSusfsVersion("v1.5.2-R28"))
         assertEquals(
-            setOf("CONFIG_KSU_SUSFS_SUS_PATH", "CONFIG_KSU_SUSFS_TRY_UMOUNT"),
-            parseSusfsFeatureNames("CONFIG_KSU_SUSFS_SUS_PATH\nCONFIG_KSU_SUSFS_TRY_UMOUNT"),
+            setOf("CONFIG_KSU_SUSFS_SUS_PATH", "CONFIG_KSU_SUSFS_SUS_MOUNT"),
+            parseSusfsFeatureNames("CONFIG_KSU_SUSFS_SUS_PATH\nCONFIG_KSU_SUSFS_SUS_MOUNT"),
         )
     }
 
@@ -88,14 +107,14 @@ class SusfsPathConfigTest {
         val capabilities = buildSusfsCapabilities(
             toolAvailable = true,
             versionText = "v1.5.2-R28",
-            featureText = "CONFIG_KSU_SUSFS_SUS_PATH CONFIG_KSU_SUSFS_TRY_UMOUNT CONFIG_KSU_SUSFS_SPOOF_UNAME",
+            featureText = "CONFIG_KSU_SUSFS_SUS_PATH CONFIG_KSU_SUSFS_SUS_MOUNT CONFIG_KSU_SUSFS_SPOOF_UNAME",
             featureProbeSucceeded = true,
         )
 
         assertTrue(capabilities.featureProbeAvailable)
         assertTrue(capabilities.supportsAddSusPath)
         assertTrue(capabilities.supportsTryUmount)
-        assertFalse(capabilities.supportsPathLoop)
+        assertTrue(capabilities.supportsPathLoop)
         assertFalse(capabilities.supportsKstat)
         assertFalse(capabilities.supportsOpenRedirect)
         assertTrue(capabilities.supportsUnameSpoof)
@@ -198,6 +217,7 @@ class SusfsPathConfigTest {
         assertEquals("#1 SMP PREEMPT", config.unameVersion)
         assertEquals(listOf("/system/bin/su"), config.loopPaths)
         assertEquals(listOf("/data/adb/modules/example"), config.susMaps)
+        assertTrue(config.openRedirects.isEmpty())
         assertTrue(result.warnings.any { it.contains("/data/adb/modules") })
     }
 
@@ -232,5 +252,143 @@ class SusfsPathConfigTest {
         assertTrue(service.contains("read_setting uname_release"))
         assertTrue(service.contains("read_setting uname_version"))
         assertTrue(service.contains("set_uname \"\${release:-default}\" \"\${build:-default}\""))
+    }
+
+    @Test
+    fun rejectsUnsupportedBackupVersionAndInvalidUidScheme() {
+        assertEquals(
+            "unsupported_backup_version:3",
+            parseSusfsBackupJson("{\"version\":3}").error,
+        )
+        val result = parseSusfsBackupJson(
+            """
+            {"version":2,"open_redirect":[
+              {"original":"/data/a","redirected":"/data/b","uid_scheme":"9"},
+              {"original":"/data/c","redirected":"/data/d"}
+            ]}
+            """.trimIndent(),
+        )
+        val config = requireNotNull(result.config)
+        assertEquals(1, config.openRedirects.size)
+        assertEquals("3", config.openRedirects.single().uidScheme)
+        assertTrue(result.warnings.any { it == "skipped_open_redirect_uid" })
+    }
+
+    @Test
+    fun importSkipsIncompleteKstatAndSizeLimitIncludesKstatPayload() {
+        val imported = parseSusfsBackupJson(
+            """{"version":2,"sus_kstat":[{"args":["/data/a","1"]}]}""",
+        )
+        assertTrue(requireNotNull(imported.config).kstatEntries.isEmpty())
+        assertTrue(imported.warnings.contains("skipped_sus_kstat"))
+
+        val largeValue = "a".repeat(4096)
+        val oversized = SusfsPathConfigState(
+            kstatEntries = List(6) {
+                SusfsKstatEntry(listOf("/data/item-$it") + List(12) { largeValue })
+            },
+        )
+        assertEquals("config_too_large", validateSusfsConfig(oversized))
+    }
+
+    @Test
+    fun mergesWithoutDuplicatingEntriesAndTracksRebootOnlyForRemoval() {
+        val current = SusfsPathConfigState(
+            paths = listOf("/data/a"),
+            enabled = true,
+        )
+        val imported = SusfsPathConfigState(
+            paths = listOf("/data/a", "/data/b"),
+            enabled = false,
+        )
+        val merged = mergeSusfsConfig(current, imported)
+        assertEquals(listOf("/data/a", "/data/b"), merged.paths)
+        assertFalse(merged.enabled)
+        assertFalse(susfsRequiresReboot(current, imported.copy(enabled = true)))
+        assertTrue(susfsRequiresReboot(current, imported))
+        assertTrue(susfsRequiresReboot(imported.copy(enabled = true), current))
+    }
+
+    @Test
+    fun parsesStructuredRuntimeStatusAndIssues() {
+        val state = parseSusfsConfigOutput(
+            listOf(
+                "__TOOL__=/system/bin/ksu_susfs",
+                "__SETTING__enabled=1",
+                "__SETTING__generation=g1",
+                "__STATUS__generation=g1",
+                "__STATUS__state=partial",
+                "__STATUS__configured_count=4",
+                "__STATUS__applied_count=2",
+                "__STATUS__failed_count=1",
+                "__STATUS__requires_reboot=1",
+                "__ISSUE__=failed\tpath\t/data/a\texit_1",
+            ),
+            buildSusfsCapabilities(true, "v2.3.0", "CONFIG_KSU_SUSFS_SUS_PATH", true),
+        )
+        assertEquals("partial", state.runtimeStatus.state)
+        assertEquals(4, state.runtimeStatus.configuredCount)
+        assertEquals(1, state.runtimeStatus.failedCount)
+        assertTrue(state.runtimeStatus.requiresReboot)
+        assertEquals("/data/a", state.runtimeStatus.issues.single().target)
+    }
+
+    @Test
+    fun currentConfigMigratesLegacyRedirectSchemeAndRejectsPathModeDuplicates() {
+        val state = parseSusfsConfigOutput(
+            listOf(
+                "__TOOL__=/system/bin/ksu_susfs",
+                "__SETTING__enabled=1",
+                "__REDIRECT__=/data/source|/data/target",
+                "__KSTAT__=/data/incomplete|1",
+            ),
+            buildSusfsCapabilities(
+                true,
+                "v2.3.0",
+                "CONFIG_KSU_SUSFS_SUS_PATH CONFIG_KSU_SUSFS_OPEN_REDIRECT",
+                true,
+            ),
+        )
+        assertEquals("3", state.openRedirects.single().uidScheme)
+        assertTrue(state.kstatEntries.isEmpty())
+        assertEquals(
+            "duplicate_path_mode",
+            validateSusfsConfig(
+                SusfsPathConfigState(paths = listOf("/data/a"), loopPaths = listOf("/data/a")),
+            ),
+        )
+    }
+
+    @Test
+    fun ignoresRuntimeStatusFromAnOlderGeneration() {
+        val state = parseSusfsConfigOutput(
+            listOf(
+                "__TOOL__=/system/bin/ksu_susfs",
+                "__SETTING__enabled=1",
+                "__SETTING__generation=new-generation",
+                "__SETTING__requires_reboot=1",
+                "__STATUS__generation=old-generation",
+                "__STATUS__state=applied",
+                "__STATUS__applied_count=7",
+                "__STATUS__requires_reboot=0",
+                "__ISSUE__=failed\tpath\t/data/stale\texit_1",
+            ),
+            buildSusfsCapabilities(true, "v2.3.0", "CONFIG_KSU_SUSFS_SUS_PATH", true),
+        )
+
+        assertEquals("new-generation", state.runtimeStatus.generation)
+        assertEquals("pending", state.runtimeStatus.state)
+        assertEquals(0, state.runtimeStatus.appliedCount)
+        assertTrue(state.runtimeStatus.requiresReboot)
+        assertTrue(state.runtimeStatus.issues.isEmpty())
+    }
+
+    @Test
+    fun treatsDisabledAndRebootPendingAsSuccessfulSavedStates() {
+        assertTrue(isSusfsApplyStateSuccessful("applied"))
+        assertTrue(isSusfsApplyStateSuccessful("reboot_pending"))
+        assertTrue(isSusfsApplyStateSuccessful("disabled"))
+        assertFalse(isSusfsApplyStateSuccessful("partial"))
+        assertFalse(isSusfsApplyStateSuccessful("failed"))
     }
 }

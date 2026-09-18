@@ -31,11 +31,21 @@ config KSU_NATIVE_KPM
 	help
 	  Deprecated compatibility symbol. Use CONFIG_KPM instead.
 
+config KSU_GKI_SECCOMP_HOOK
+	bool "Enable GKI Seccomp hook"
+	depends on KSU = y && ARM64 && SECCOMP
+	default y
+	help
+	  Disable the inherited zygote Seccomp filter for the authenticated
+	  Manager and apps explicitly granted root. If the hook cannot run,
+	  KernelSU keeps the existing reboot syscall cache fallback.
+
 menu "KernelSU - SUSFS"
-	depends on KSU = y && ARM64 && THREAD_INFO_IN_TASK
+	depends on KSU = y && ARM64 && THREAD_INFO_IN_TASK && SECCOMP
 
 config KSU_SUSFS
 	bool "Enable SUSFS for built-in GKI"
+	select KSU_GKI_SECCOMP_HOOK
 	default n
 	help
 	  Build the SUSFS kernel implementation and the ApkeSU source-hook

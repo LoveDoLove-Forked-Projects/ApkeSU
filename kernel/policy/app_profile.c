@@ -1,19 +1,16 @@
-#include "hook/patch_memory.h"
-#include "infra/symbol_resolver.h"
-#include "linux/kallsyms.h"
 #include <linux/capability.h>
 #include <linux/cred.h>
+#include <linux/errno.h>
 #include <linux/sched.h>
 #include <linux/sched/user.h>
 #include <linux/sched/signal.h>
-#include <linux/seccomp.h>
-#include <linux/slab.h>
 #include <linux/thread_info.h>
 #include <linux/uidgid.h>
 #include <linux/version.h>
 
 #include "policy/allowlist.h"
 #include "policy/app_profile.h"
+#include "feature/seccomp_hook.h"
 #include "klog.h" // IWYU pragma: keep
 #include "selinux/selinux.h"
 #include "infra/su_mount_ns.h"
@@ -66,67 +63,10 @@ void setup_groups(struct root_profile *profile, struct cred *cred)
     put_group_info(group_info);
 }
 
-void seccomp_filter_release(struct task_struct *tsk);
-
-// https://cs.android.com/android/_/android/kernel/common/+/5346453405bf12d7ed6003f45dd47b71744fe1be
-// Some 15-6.6 kernel have this backport while others don't have, e.g. Pixel 10
-// See also:
-// https://github.com/tiann/KernelSU/issues/3629
-#define NEED_BACKPORT_COMPAT                                                                                           \
-    LINUX_VERSION_CODE >= KERNEL_VERSION(6, 6, 0) && LINUX_VERSION_CODE < KERNEL_VERSION(6, 11, 0)
-
-#if NEED_BACKPORT_COMPAT
-static bool has_call_to_spin_lock = false;
-#endif
-
-void disable_seccomp(void)
-{
-    struct task_struct *fake;
-
-    fake = kmalloc(sizeof(*fake), GFP_KERNEL);
-    if (!fake) {
-        pr_warn("failed to alloc fake task_struct\n");
-        return;
-    }
-
-    // Refer to kernel/seccomp.c: seccomp_set_mode_strict
-    // When disabling Seccomp, ensure that current->sighand->siglock is held during the operation.
-    spin_lock_irq(&current->sighand->siglock);
-    // disable seccomp
-#if defined(CONFIG_GENERIC_ENTRY) && LINUX_VERSION_CODE >= KERNEL_VERSION(5, 11, 0)
-    clear_syscall_work(SECCOMP);
-#else
-    clear_thread_flag(TIF_SECCOMP);
-#endif
-
-    memcpy(fake, current, sizeof(*fake));
-
-    current->seccomp.mode = 0;
-    current->seccomp.filter = NULL;
-    atomic_set(&current->seccomp.filter_count, 0);
-    spin_unlock_irq(&current->sighand->siglock);
-
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 11, 0)
-    // https://github.com/torvalds/linux/commit/bfafe5efa9754ebc991750da0bcca2a6694f3ed3#diff-45eb79a57536d8eccfc1436932f093eb5c0b60d9361c39edb46581ad313e8987R576-R577
-    fake->flags |= PF_EXITING;
-#elif NEED_BACKPORT_COMPAT
-    if (has_call_to_spin_lock) {
-        fake->flags |= PF_EXITING;
-    } else {
-        fake->sighand = NULL;
-    }
-#elif LINUX_VERSION_CODE >= KERNEL_VERSION(5, 11, 0)
-    // https://github.com/torvalds/linux/commit/0d8315dddd2899f519fe1ca3d4d5cdaf44ea421e#diff-45eb79a57536d8eccfc1436932f093eb5c0b60d9361c39edb46581ad313e8987R556-R558
-    fake->sighand = NULL;
-#endif
-
-    seccomp_filter_release(fake);
-    kfree(fake);
-}
-
 int escape_with_root_profile(void)
 {
     int ret = 0;
+    int seccomp_ret;
     struct cred *cred;
 #ifndef CONFIG_KSU_SUSFS
     struct task_struct *p = current;
@@ -205,7 +145,9 @@ int escape_with_root_profile(void)
 
     commit_creds(cred);
 
-    disable_seccomp();
+    seccomp_ret = ksu_disable_current_seccomp();
+    if (seccomp_ret && seccomp_ret != -EOPNOTSUPP)
+        pr_warn_ratelimited("failed to disable seccomp for uid %u: %d\n", current_uid().val, seccomp_ret);
 
     if (profile->flags & FLAG_KSU_NO_NEW_PRIVS) {
         set_thread_flag(TIF_KSU_DISABLE_ESCAPE_WITH_ROOT);
@@ -239,21 +181,4 @@ int escape_to_root_for_init(void)
     setup_selinux(KERNEL_SU_CONTEXT, cred);
     commit_creds(cred);
     return 0;
-}
-
-void __init ksu_app_profile_init(void)
-{
-#if NEED_BACKPORT_COMPAT
-    unsigned long size = 0;
-    int ret;
-    void *raw_spin_lock_irq_sym = find_kernel_symbol_exact("_raw_spin_lock_irq");
-    void *seccomp_filter_release_sym = find_kernel_symbol_exact("seccomp_filter_release");
-    ret = kallsyms_lookup_size_offset(seccomp_filter_release_sym, &size, NULL);
-    if (!ret || !size) {
-        pr_err("failed to get size of seccomp_filter_release: %d, use 128\n", ret);
-        size = 128;
-    }
-    has_call_to_spin_lock = scan_call_to(seccomp_filter_release_sym, size, raw_spin_lock_irq_sym) != NULL;
-    pr_info("seccomp_filter_release has_call_to_spin_lock = %d\n", has_call_to_spin_lock);
-#endif
 }

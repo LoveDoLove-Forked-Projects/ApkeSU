@@ -4,7 +4,10 @@ import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -23,12 +26,14 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
+import androidx.compose.material.icons.automirrored.rounded.HelpOutline
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.Download
 import androidx.compose.material.icons.rounded.ErrorOutline
 import androidx.compose.material.icons.rounded.Info
 import androidx.compose.material.icons.rounded.Memory
+import androidx.compose.material.icons.rounded.MoreVert
 import androidx.compose.material.icons.rounded.Policy
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.UploadFile
@@ -37,6 +42,8 @@ import androidx.compose.material.icons.rounded.WarningAmber
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -77,6 +84,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import me.weishu.kernelsu.R
 import me.weishu.kernelsu.ui.navigation3.LocalNavigator
+import me.weishu.kernelsu.ui.navigation3.Route
 import me.weishu.kernelsu.ui.theme.immersivePageColor
 import me.weishu.kernelsu.ui.theme.immersiveScrolledTopBarColor
 import me.weishu.kernelsu.ui.theme.immersiveSurfaceColor
@@ -86,7 +94,9 @@ import me.weishu.kernelsu.ui.util.SusfsKstatEntry
 import me.weishu.kernelsu.ui.util.SusfsOpenRedirectEntry
 import me.weishu.kernelsu.ui.util.SusfsPathConfigState
 import me.weishu.kernelsu.ui.util.buildSusfsBackupJson
+import me.weishu.kernelsu.ui.util.getSusfsDiagnostics
 import me.weishu.kernelsu.ui.util.getSusfsPathConfig
+import me.weishu.kernelsu.ui.util.mergeSusfsConfig
 import me.weishu.kernelsu.ui.util.normalizeSusfsMapPath
 import me.weishu.kernelsu.ui.util.normalizeSusfsPath
 import me.weishu.kernelsu.ui.util.parseSusfsBackupJson
@@ -114,10 +124,16 @@ fun SusfsPathConfigScreen() {
     var applying by remember { mutableStateOf(false) }
     var importing by remember { mutableStateOf(false) }
     var actionError by remember { mutableStateOf("") }
+    var actionErrorRetryable by remember { mutableStateOf(false) }
     var importWarnings by remember { mutableStateOf(emptyList<String>()) }
     var showDiscardDialog by rememberSaveable { mutableStateOf(false) }
+    var showImportModeDialog by rememberSaveable { mutableStateOf(false) }
+    var pendingImport by remember { mutableStateOf<SusfsPathConfigState?>(null) }
     var pendingExport by remember { mutableStateOf("") }
+    var pendingDiagnostics by remember { mutableStateOf("") }
     var selectedPageIndex by rememberSaveable { mutableStateOf(0) }
+    var showActionMenu by rememberSaveable { mutableStateOf(false) }
+    var exportingDiagnostics by remember { mutableStateOf(false) }
 
     val selectedPage = SusfsPage.entries[selectedPageIndex.coerceIn(SusfsPage.entries.indices)]
     val runtimeScrollState = rememberScrollState()
@@ -131,6 +147,7 @@ fun SusfsPathConfigScreen() {
         draft = refreshed
         baseline = refreshed
         actionError = ""
+        actionErrorRetryable = false
         importWarnings = emptyList()
     }
 
@@ -152,8 +169,9 @@ fun SusfsPathConfigScreen() {
         scope.launch {
             applying = true
             actionError = ""
+            actionErrorRetryable = false
             val result = saveAndApplySusfsConfig(draft)
-            if (result.success) {
+            if (result.saved) {
                 val refreshed = getSusfsPathConfig()
                 if (refreshed.available) {
                     replaceWithRuntime(refreshed)
@@ -168,9 +186,15 @@ fun SusfsPathConfigScreen() {
                     draft = saved
                     baseline = saved
                 }
+                if (!result.success) {
+                    actionError = result.error.ifBlank { "partial_apply" }
+                    actionErrorRetryable = true
+                }
                 Toast.makeText(
                     context,
-                    if (result.requiresReboot) {
+                    if (!result.success) {
+                        resources.getString(R.string.susfs_path_apply_partial)
+                    } else if (result.requiresReboot) {
                         resources.getString(R.string.susfs_path_apply_reboot)
                     } else {
                         resources.getString(R.string.susfs_path_apply_success, result.appliedCount)
@@ -179,6 +203,7 @@ fun SusfsPathConfigScreen() {
                 ).show()
             } else {
                 actionError = result.error.ifBlank { "apply_failed" }
+                actionErrorRetryable = true
             }
             applying = false
         }
@@ -189,6 +214,7 @@ fun SusfsPathConfigScreen() {
             scope.launch {
                 importing = true
                 actionError = ""
+                actionErrorRetryable = false
                 val imported = runCatching {
                     withContext(Dispatchers.IO) {
                         val input = requireNotNull(context.contentResolver.openInputStream(uri))
@@ -200,14 +226,9 @@ fun SusfsPathConfigScreen() {
                     if (config == null || result.error.isNotBlank()) {
                         actionError = result.error.ifBlank { "invalid_backup" }
                     } else {
-                        draft = config.copy(
-                            available = runtime.available,
-                            toolPath = runtime.toolPath,
-                            capabilities = runtime.capabilities,
-                            error = runtime.error,
-                        )
+                        pendingImport = config
                         importWarnings = result.warnings
-                        Toast.makeText(context, R.string.susfs_import_ready, Toast.LENGTH_LONG).show()
+                        showImportModeDialog = true
                     }
                 }.onFailure { error ->
                     actionError = error.message.orEmpty().ifBlank { "import_failed" }
@@ -235,6 +256,28 @@ fun SusfsPathConfigScreen() {
                     Toast.LENGTH_LONG,
                 ).show()
                 pendingExport = ""
+            }
+        }
+    }
+
+    val diagnosticLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("text/plain"),
+    ) { uri ->
+        if (uri != null && pendingDiagnostics.isNotEmpty()) {
+            scope.launch {
+                val result = runCatching {
+                    withContext(Dispatchers.IO) {
+                        requireNotNull(context.contentResolver.openOutputStream(uri, "w")).use { output ->
+                            output.write(pendingDiagnostics.toByteArray(Charsets.UTF_8))
+                        }
+                    }
+                }
+                Toast.makeText(
+                    context,
+                    if (result.isSuccess) R.string.susfs_diagnostics_exported else R.string.susfs_export_failed,
+                    Toast.LENGTH_LONG,
+                ).show()
+                pendingDiagnostics = ""
             }
         }
     }
@@ -267,6 +310,57 @@ fun SusfsPathConfigScreen() {
         )
     }
 
+    if (showImportModeDialog && pendingImport != null) {
+        AlertDialog(
+            onDismissRequest = {
+                showImportModeDialog = false
+                pendingImport = null
+            },
+            title = { Text(stringResource(R.string.susfs_import_mode_title)) },
+            text = { Text(stringResource(R.string.susfs_import_mode_message)) },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        val imported = requireNotNull(pendingImport)
+                        draft = mergeSusfsConfig(draft, imported).copy(
+                            available = runtime.available,
+                            toolPath = runtime.toolPath,
+                            capabilities = runtime.capabilities,
+                            error = runtime.error,
+                        )
+                        showImportModeDialog = false
+                        pendingImport = null
+                        Toast.makeText(context, R.string.susfs_import_ready, Toast.LENGTH_LONG).show()
+                    },
+                ) { Text(stringResource(R.string.susfs_import_merge)) }
+            },
+            dismissButton = {
+                Row {
+                    TextButton(
+                        onClick = {
+                            val imported = requireNotNull(pendingImport)
+                            draft = imported.copy(
+                                available = runtime.available,
+                                toolPath = runtime.toolPath,
+                                capabilities = runtime.capabilities,
+                                error = runtime.error,
+                            )
+                            showImportModeDialog = false
+                            pendingImport = null
+                            Toast.makeText(context, R.string.susfs_import_ready, Toast.LENGTH_LONG).show()
+                        },
+                    ) { Text(stringResource(R.string.susfs_import_replace)) }
+                    TextButton(
+                        onClick = {
+                            showImportModeDialog = false
+                            pendingImport = null
+                        },
+                    ) { Text(stringResource(android.R.string.cancel)) }
+                }
+            },
+        )
+    }
+
     Scaffold(
         containerColor = immersivePageColor(MaterialTheme.colorScheme.background),
         contentWindowInsets = WindowInsets.safeDrawing,
@@ -279,23 +373,63 @@ fun SusfsPathConfigScreen() {
                     }
                 },
                 actions = {
-                    IconButton(
-                        onClick = { importLauncher.launch(arrayOf("application/json", "text/plain")) },
-                        enabled = !loading && !applying && !importing,
-                    ) {
-                        Icon(Icons.Rounded.UploadFile, contentDescription = stringResource(R.string.susfs_import))
+                    IconButton(onClick = dropUnlessResumed { navigator.push(Route.SusfsGuide) }) {
+                        Icon(
+                            Icons.AutoMirrored.Rounded.HelpOutline,
+                            contentDescription = stringResource(R.string.susfs_path_help),
+                        )
                     }
-                    IconButton(
-                        onClick = {
-                            pendingExport = buildSusfsBackupJson(draft)
-                            exportLauncher.launch("apkesu-susfs-backup.json")
-                        },
-                        enabled = !loading && !applying && !importing,
-                    ) {
-                        Icon(Icons.Rounded.Download, contentDescription = stringResource(R.string.susfs_export))
-                    }
-                    IconButton(onClick = ::refresh, enabled = !loading && !applying && !importing && !dirty) {
-                        Icon(Icons.Rounded.Refresh, contentDescription = stringResource(R.string.susfs_path_refresh))
+                    Box {
+                        IconButton(onClick = { showActionMenu = true }) {
+                            Icon(Icons.Rounded.MoreVert, contentDescription = stringResource(R.string.susfs_more_actions))
+                        }
+                        DropdownMenu(
+                            expanded = showActionMenu,
+                            onDismissRequest = { showActionMenu = false },
+                        ) {
+                            DropdownMenuItem(
+                                text = { Text(stringResource(R.string.susfs_import)) },
+                                leadingIcon = { Icon(Icons.Rounded.UploadFile, contentDescription = null) },
+                                enabled = !loading && !applying && !importing && !exportingDiagnostics,
+                                onClick = {
+                                    showActionMenu = false
+                                    importLauncher.launch(arrayOf("application/json", "text/plain"))
+                                },
+                            )
+                            DropdownMenuItem(
+                                text = { Text(stringResource(R.string.susfs_export)) },
+                                leadingIcon = { Icon(Icons.Rounded.Download, contentDescription = null) },
+                                enabled = !loading && !applying && !importing && !exportingDiagnostics,
+                                onClick = {
+                                    showActionMenu = false
+                                    pendingExport = buildSusfsBackupJson(draft)
+                                    exportLauncher.launch("apkesu-susfs-backup.json")
+                                },
+                            )
+                            DropdownMenuItem(
+                                text = { Text(stringResource(R.string.export_diagnostics)) },
+                                leadingIcon = { Icon(Icons.Rounded.Memory, contentDescription = null) },
+                                enabled = !loading && !applying && !importing && !exportingDiagnostics,
+                                onClick = {
+                                    showActionMenu = false
+                                    scope.launch {
+                                        exportingDiagnostics = true
+                                        pendingDiagnostics = getSusfsDiagnostics()
+                                        exportingDiagnostics = false
+                                        diagnosticLauncher.launch("apkesu-susfs-diagnostics.txt")
+                                    }
+                                },
+                            )
+                            DropdownMenuItem(
+                                text = { Text(stringResource(R.string.susfs_path_refresh)) },
+                                leadingIcon = { Icon(Icons.Rounded.Refresh, contentDescription = null) },
+                                enabled = !loading && !applying && !importing && !exportingDiagnostics && !dirty,
+                                onClick = {
+                                    showActionMenu = false
+                                    refresh()
+                                },
+                            )
+                        }
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(
@@ -393,6 +527,41 @@ fun SusfsPathConfigScreen() {
                 )
             }
 
+            if (actionError.isNotBlank()) {
+                Surface(
+                    shape = RoundedCornerShape(8.dp),
+                    color = MaterialTheme.colorScheme.errorContainer,
+                ) {
+                    Row(
+                        modifier = Modifier.padding(16.dp),
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Icon(Icons.Rounded.ErrorOutline, contentDescription = null)
+                        Text(
+                            stringResource(
+                                if (actionErrorRetryable) {
+                                    R.string.susfs_path_apply_failed
+                                } else {
+                                    R.string.susfs_operation_failed
+                                },
+                                actionError,
+                            ),
+                            modifier = Modifier.weight(1f),
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                        if (actionErrorRetryable) {
+                            TextButton(
+                                onClick = ::apply,
+                                enabled = runtime.available && !loading && !applying && !importing,
+                            ) {
+                                Text(stringResource(R.string.susfs_retry_apply))
+                            }
+                        }
+                    }
+                }
+            }
+
             if (selectedPage == SusfsPage.RuntimePolicy) {
                 SusfsSection(title = stringResource(R.string.susfs_runtime_policy)) {
                     PolicyToggle(
@@ -407,7 +576,8 @@ fun SusfsPathConfigScreen() {
                         title = stringResource(R.string.susfs_logging),
                         summary = stringResource(R.string.susfs_logging_summary),
                         checked = draft.logging,
-                        enabled = runtime.available && draft.enabled && !applying,
+                        enabled = runtime.available && draft.enabled &&
+                            (runtime.capabilities.supportsLogging || draft.logging) && !applying,
                         onCheckedChange = { draft = draft.copy(logging = it) },
                     )
                     HorizontalDivider()
@@ -415,7 +585,8 @@ fun SusfsPathConfigScreen() {
                         title = stringResource(R.string.susfs_avc_spoofing),
                         summary = stringResource(R.string.susfs_avc_spoofing_summary),
                         checked = draft.avcLogSpoofing,
-                        enabled = runtime.available && draft.enabled && runtime.capabilities.supportsAvcLogSpoofing && !applying,
+                        enabled = runtime.available && draft.enabled &&
+                            (runtime.capabilities.supportsAvcLogSpoofing || draft.avcLogSpoofing) && !applying,
                         onCheckedChange = { draft = draft.copy(avcLogSpoofing = it) },
                     )
                     HorizontalDivider()
@@ -423,26 +594,9 @@ fun SusfsPathConfigScreen() {
                         title = stringResource(R.string.susfs_hide_mounts_non_su),
                         summary = stringResource(R.string.susfs_hide_mounts_non_su_summary),
                         checked = draft.hideSusMntsForNonSuProcs,
-                        enabled = runtime.available && draft.enabled && runtime.capabilities.supportsHideSusMounts && !applying,
-                        onCheckedChange = {
-                            draft = draft.copy(
-                                hideSusMntsForNonSuProcs = it,
-                                hideSusMntsForAllProcs = if (it) false else draft.hideSusMntsForAllProcs,
-                            )
-                        },
-                    )
-                    HorizontalDivider()
-                    PolicyToggle(
-                        title = stringResource(R.string.susfs_hide_mounts_all),
-                        summary = stringResource(R.string.susfs_hide_mounts_all_summary),
-                        checked = draft.hideSusMntsForAllProcs,
-                        enabled = runtime.available && draft.enabled && runtime.capabilities.supportsHideSusMounts && !applying,
-                        onCheckedChange = {
-                            draft = draft.copy(
-                                hideSusMntsForAllProcs = it,
-                                hideSusMntsForNonSuProcs = if (it) false else draft.hideSusMntsForNonSuProcs,
-                            )
-                        },
+                        enabled = runtime.available && draft.enabled &&
+                            (runtime.capabilities.supportsHideSusMounts || draft.hideSusMntsForNonSuProcs) && !applying,
+                        onCheckedChange = { draft = draft.copy(hideSusMntsForNonSuProcs = it) },
                     )
                 }
 
@@ -512,14 +666,6 @@ fun SusfsPathConfigScreen() {
                 )
             }
 
-            if (actionError.isNotBlank()) {
-                SusfsNoticeCard(
-                    title = stringResource(R.string.susfs_apply_error_title),
-                    message = stringResource(R.string.susfs_path_apply_failed, actionError),
-                    warning = true,
-                )
-            }
-
             when (selectedPage) {
                 SusfsPage.RuntimePolicy -> Unit
                 SusfsPage.PathMasking -> SusfsNoticeCard(
@@ -544,6 +690,9 @@ private fun SusfsStatusPanel(
     page: SusfsPage,
 ) {
     val available = state.available && !loading
+    val runtimeState = state.runtimeStatus.state
+    val runtimeFailed = available && runtimeState == "failed"
+    val runtimeWarning = available && runtimeState in setOf("partial", "reboot_pending", "pending")
     val message = when {
         loading -> stringResource(R.string.processing)
         state.available -> stringResource(R.string.susfs_path_available, state.toolPath)
@@ -554,7 +703,13 @@ private fun SusfsStatusPanel(
     }
     Surface(
         shape = RoundedCornerShape(8.dp),
-        color = if (available) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.errorContainer,
+        color = when {
+            loading -> immersiveSurfaceColor(MaterialTheme.colorScheme.surfaceContainer)
+            runtimeFailed -> MaterialTheme.colorScheme.errorContainer
+            runtimeWarning -> MaterialTheme.colorScheme.secondaryContainer
+            available -> MaterialTheme.colorScheme.primaryContainer
+            else -> immersiveSurfaceColor(MaterialTheme.colorScheme.surfaceContainerHigh)
+        },
     ) {
         Row(
             modifier = Modifier.padding(16.dp),
@@ -565,10 +720,10 @@ private fun SusfsStatusPanel(
                 CircularProgressIndicator(modifier = Modifier.size(24.dp), strokeWidth = 2.dp)
             } else {
                 Icon(
-                    imageVector = if (!available) {
-                        Icons.Rounded.ErrorOutline
-                    } else {
-                        when (page) {
+                    imageVector = when {
+                        !available || runtimeFailed -> Icons.Rounded.ErrorOutline
+                        runtimeWarning -> Icons.Rounded.WarningAmber
+                        else -> when (page) {
                             SusfsPage.RuntimePolicy -> Icons.Rounded.Policy
                             SusfsPage.PathMasking -> Icons.Rounded.VisibilityOff
                             SusfsPage.KernelSpoofing -> Icons.Rounded.Memory
@@ -611,11 +766,70 @@ private fun SusfsStatusPanel(
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         style = MaterialTheme.typography.bodySmall,
                     )
+                    if (state.runtimeStatus.generation.isNotBlank()) {
+                        Text(
+                            text = stringResource(
+                                R.string.susfs_runtime_status_value,
+                                susfsRuntimeStateLabel(state.runtimeStatus.state),
+                                state.runtimeStatus.configuredCount,
+                                state.runtimeStatus.appliedCount,
+                                state.runtimeStatus.skippedCount,
+                                state.runtimeStatus.failedCount,
+                            ),
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                        Text(
+                            text = stringResource(
+                                R.string.susfs_runtime_generation,
+                                state.runtimeStatus.generation.take(8),
+                            ),
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            style = MaterialTheme.typography.labelSmall,
+                        )
+                        state.runtimeStatus.issues.take(3).forEach { issue ->
+                            Text(
+                                text = stringResource(
+                                    R.string.susfs_runtime_issue,
+                                    issue.category,
+                                    issue.target,
+                                    issue.code,
+                                ),
+                                color = MaterialTheme.colorScheme.error,
+                                style = MaterialTheme.typography.labelSmall,
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+                        if (state.runtimeStatus.issues.size > 3) {
+                            Text(
+                                text = stringResource(
+                                    R.string.susfs_runtime_more_issues,
+                                    state.runtimeStatus.issues.size - 3,
+                                ),
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                style = MaterialTheme.typography.labelSmall,
+                            )
+                        }
+                    }
                 }
             }
         }
     }
 }
+
+@Composable
+private fun susfsRuntimeStateLabel(state: String): String = stringResource(
+    when (state) {
+        "applied" -> R.string.susfs_state_applied
+        "partial" -> R.string.susfs_state_partial
+        "failed" -> R.string.susfs_state_failed
+        "reboot_pending" -> R.string.susfs_state_reboot_pending
+        "disabled" -> R.string.susfs_state_disabled
+        "pending" -> R.string.susfs_state_pending
+        else -> R.string.susfs_state_unknown
+    },
+)
 
 @Composable
 private fun SusfsSection(
@@ -767,12 +981,13 @@ private fun SusfsRedirectEditor(
     val context = LocalContext.current
     var original by rememberSaveable { mutableStateOf("") }
     var redirected by rememberSaveable { mutableStateOf("") }
-    var uidScheme by rememberSaveable { mutableStateOf("") }
+    var uidScheme by rememberSaveable { mutableStateOf("3") }
+    var uidMenuExpanded by rememberSaveable { mutableStateOf(false) }
 
     fun addRedirect() {
         val source = normalizeSusfsPath(original)
         val target = normalizeSusfsPath(redirected)
-        if (source == null || target == null || (uidScheme.isNotBlank() && uidScheme.any { !it.isDigit() })) {
+        if (source == null || target == null || uidScheme.toIntOrNull() !in 0..4) {
             Toast.makeText(context, R.string.susfs_redirect_invalid, Toast.LENGTH_LONG).show()
             return
         }
@@ -784,7 +999,7 @@ private fun SusfsRedirectEditor(
         onValuesChange(values + entry)
         original = ""
         redirected = ""
-        uidScheme = ""
+        uidScheme = "3"
     }
 
     SusfsSection(title = stringResource(R.string.susfs_open_redirect)) {
@@ -809,22 +1024,64 @@ private fun SusfsRedirectEditor(
             singleLine = true,
             enabled = enabled,
         )
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-            OutlinedTextField(
-                value = uidScheme,
-                onValueChange = { uidScheme = it.filter(Char::isDigit) },
-                modifier = Modifier.weight(1f),
-                label = { Text(stringResource(R.string.susfs_redirect_uid_scheme)) },
-                singleLine = true,
-                enabled = enabled,
-            )
-            OutlinedButton(
-                onClick = ::addRedirect,
-                enabled = enabled && original.isNotBlank() && redirected.isNotBlank(),
-            ) {
-                Icon(Icons.Rounded.Add, contentDescription = null)
-                Spacer(Modifier.width(6.dp))
-                Text(stringResource(R.string.susfs_path_add))
+        BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
+            val compact = maxWidth < 420.dp
+            val selector: @Composable (Modifier) -> Unit = { selectorModifier ->
+                Box(modifier = selectorModifier) {
+                    OutlinedTextField(
+                        value = uidScheme,
+                        onValueChange = {},
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text(stringResource(R.string.susfs_redirect_uid_scheme)) },
+                        singleLine = true,
+                        readOnly = true,
+                        enabled = enabled,
+                    )
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .clickable(enabled = enabled) { uidMenuExpanded = true },
+                    )
+                    DropdownMenu(
+                        expanded = uidMenuExpanded,
+                        onDismissRequest = { uidMenuExpanded = false },
+                    ) {
+                        (0..4).forEach { scheme ->
+                            DropdownMenuItem(
+                                text = { Text(scheme.toString()) },
+                                onClick = {
+                                    uidScheme = scheme.toString()
+                                    uidMenuExpanded = false
+                                },
+                            )
+                        }
+                    }
+                }
+            }
+            val addButton: @Composable (Modifier) -> Unit = { buttonModifier ->
+                OutlinedButton(
+                    onClick = ::addRedirect,
+                    enabled = enabled && original.isNotBlank() && redirected.isNotBlank(),
+                    modifier = buttonModifier,
+                ) {
+                    Icon(Icons.Rounded.Add, contentDescription = null)
+                    Spacer(Modifier.width(6.dp))
+                    Text(stringResource(R.string.susfs_path_add))
+                }
+            }
+            if (compact) {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    selector(Modifier.fillMaxWidth())
+                    addButton(Modifier.fillMaxWidth())
+                }
+            } else {
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    selector(Modifier.weight(1f))
+                    addButton(Modifier)
+                }
             }
         }
         values.forEachIndexed { index, value ->
@@ -950,11 +1207,13 @@ private fun editableSusfsConfigEquals(
     available = false,
     toolPath = "",
     capabilities = SusfsCapabilities(),
+    runtimeStatus = me.weishu.kernelsu.ui.util.SusfsRuntimeStatus(),
     error = "",
 ) == second.copy(
     available = false,
     toolPath = "",
     capabilities = SusfsCapabilities(),
+    runtimeStatus = me.weishu.kernelsu.ui.util.SusfsRuntimeStatus(),
     error = "",
 )
 

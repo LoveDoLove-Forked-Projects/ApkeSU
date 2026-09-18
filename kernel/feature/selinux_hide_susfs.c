@@ -13,6 +13,7 @@
 #include <linux/moduleparam.h>
 #include <linux/mutex.h>
 #include <linux/version.h>
+#include <linux/compiler.h>
 // security/selinux/include/security.h
 #include <security.h>
 #include <ss/context.h>
@@ -58,7 +59,7 @@ struct page *fake_status = NULL;
 void initialize_fake_status()
 {
     mutex_lock(&selinux_state.status_lock);
-    if (fake_status)
+    if (READ_ONCE(fake_status))
         goto out;
     if (!selinux_state.status_page) {
         pr_warn("initialize_fake_status: status_page not exist\n");
@@ -66,7 +67,7 @@ void initialize_fake_status()
     }
 
     struct selinux_kernel_status *status = page_address(selinux_state.status_page);
-    if (!status->enforcing) {
+    if (!status->enforcing && !ksu_late_loaded) {
         pr_warn("initialize_fake_status: skip not enforcing\n");
         goto out;
     }
@@ -79,8 +80,18 @@ void initialize_fake_status()
 
     struct selinux_kernel_status *new_status = page_address(new_page);
     memcpy(new_status, status, sizeof(*status));
+    if (ksu_late_loaded) {
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 10, 0)
+        new_status->sequence = 4;
+        new_status->policyload = 1;
+#else
+        new_status->sequence = 0;
+        new_status->policyload = 0;
+#endif
+        new_status->enforcing = 1;
+    }
 
-    fake_status = new_page;
+    WRITE_ONCE(fake_status, new_page);
     pr_info("initialize_fake_status initialized: sequence=%d, policyload=%d, enforcing=%d\n", new_status->sequence,
             new_status->policyload, new_status->enforcing);
 
@@ -92,7 +103,7 @@ void ksu_selinux_hide_handle_second_stage()
 {
     initialize_fake_status();
     // https://github.com/torvalds/linux/blame/e8c2f9fdadee7cbc75134dc463c1e0d856d6e5c7/security/selinux/selinuxfs.c#L2014
-    if (fake_status)
+    if (READ_ONCE(fake_status))
         static_key_disable(&fake_status_initialize_key.key);
     else
         pr_warn("selinux_hide: fake status need late initialization\n");
@@ -101,16 +112,26 @@ void ksu_selinux_hide_handle_second_stage()
 void ksu_selinux_hide_handle_post_fs_data()
 {
     static_key_disable(&fake_status_initialize_key.key);
-    if (!fake_status)
+    if (!READ_ONCE(fake_status))
         pr_err("selinux_hide: fake status is not initialized after post-fs-data!\n");
 }
 
 static int ksu_selinux_hide_enable()
 {
+    bool status_ready;
+
     pr_info("selinux_hide: init selinux hide\n");
     if (!backup_sepolicy) {
         pr_err("no backup sepolicy available, please save feature and reboot to retry!\n");
         return -EAGAIN;
+    }
+
+    mutex_lock(&selinux_state.status_lock);
+    status_ready = READ_ONCE(fake_status) != NULL;
+    mutex_unlock(&selinux_state.status_lock);
+    if (!status_ready) {
+        pr_err("selinux_hide: fake status is not initialized\n");
+        return -ENODATA;
     }
 
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 6, 0)
@@ -124,7 +145,8 @@ static int ksu_selinux_hide_enable()
 
 static int selinux_hide_feature_get(u64 *value)
 {
-    *value = ksu_selinux_hide_enabled ? 1 : 0;
+    *value = READ_ONCE(ksu_selinux_hide_enabled) &&
+             READ_ONCE(ksu_selinux_hide_running) ? 1 : 0;
     return 0;
 }
 
@@ -134,21 +156,25 @@ static int selinux_hide_feature_set(u64 value)
     int ret = 0;
     pr_info("selinux_hide: set to %d\n", enable);
     mutex_lock(&selinux_hide_mutex);
-    ksu_selinux_hide_enabled = enable;
     if (enable) {
-        if (!ksu_selinux_hide_running) {
+        if (!READ_ONCE(ksu_selinux_hide_running)) {
             ret = ksu_selinux_hide_enable();
             if (!ret) {
-                ksu_selinux_hide_running = true;
+                WRITE_ONCE(ksu_selinux_hide_running, true);
+                WRITE_ONCE(ksu_selinux_hide_enabled, true);
+            } else {
+                WRITE_ONCE(ksu_selinux_hide_enabled, false);
+                WRITE_ONCE(ksu_selinux_hide_running, false);
             }
+        } else {
+            WRITE_ONCE(ksu_selinux_hide_enabled, true);
         }
     } else {
-        if (ksu_selinux_hide_running) {
-            ksu_selinux_hide_running = false;
-        }
+        WRITE_ONCE(ksu_selinux_hide_enabled, false);
+        WRITE_ONCE(ksu_selinux_hide_running, false);
     }
     pr_info("selinux_hide: ksu_selinux_hide_enabled: %d, ksu_selinux_hide_running: %d\n",
-            ksu_selinux_hide_enabled, ksu_selinux_hide_running);
+            READ_ONCE(ksu_selinux_hide_enabled), READ_ONCE(ksu_selinux_hide_running));
     mutex_unlock(&selinux_hide_mutex);
     return ret;
 }
@@ -165,28 +191,34 @@ void __init ksu_selinux_hide_init()
     if (ksu_register_feature_handler(&selinux_hide_handler)) {
         pr_err("Failed to register selinux_hide feature handler\n");
     }
-    static_key_enable(&fake_status_initialize_key.key);
+    if (ksu_late_loaded)
+        initialize_fake_status();
+    else
+        static_key_enable(&fake_status_initialize_key.key);
 }
 
 void __exit ksu_selinux_hide_exit()
 {
+    struct page *status_page;
+
     mutex_lock(&selinux_hide_mutex);
-    if (ksu_selinux_hide_running) {
-        ksu_selinux_hide_running = false;
-    }
+    WRITE_ONCE(ksu_selinux_hide_enabled, false);
+    WRITE_ONCE(ksu_selinux_hide_running, false);
     mutex_unlock(&selinux_hide_mutex);
     ksu_unregister_feature_handler(KSU_FEATURE_SELINUX_HIDE);
     mutex_lock(&selinux_state.status_lock);
-    if (fake_status)
-        __free_page(fake_status);
-    fake_status = NULL;
+    status_page = READ_ONCE(fake_status);
+    WRITE_ONCE(fake_status, NULL);
+    if (status_page)
+        __free_page(status_page);
     mutex_unlock(&selinux_state.status_lock);
 }
 
 void ksu_selinux_hide_drop_backup_if_unused()
 {
     mutex_lock(&selinux_hide_mutex);
-    if (!ksu_selinux_hide_running && backup_sepolicy) {
+    if (!READ_ONCE(ksu_selinux_hide_running) &&
+        !READ_ONCE(ksu_selinux_hide_enabled) && backup_sepolicy) {
         pr_info("selinux_hide is not enabled - drop backup_sepolicy\n");
         sidtab_destroy(backup_sepolicy->sidtab);
         kfree(backup_sepolicy->sidtab);

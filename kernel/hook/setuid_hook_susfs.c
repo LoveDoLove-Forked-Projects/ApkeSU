@@ -21,11 +21,26 @@
 #include "infra/seccomp_cache.h"
 #include "supercall/supercall.h"
 #include "feature/kernel_umount.h"
+#include "feature/seccomp_hook.h"
 
 extern u32 susfs_zygote_sid;
 extern u32 susfs_zygote_next_sid;
-extern void disable_seccomp(void);
 extern struct work_struct susfs_extra_works;
+
+static void ksu_disable_zygote_seccomp(uid_t uid)
+{
+    int ret = ksu_disable_current_seccomp();
+
+    if (!ret)
+        return;
+
+    pr_warn_ratelimited("seccomp hook failed for uid %u: %d, using cache fallback\n", uid, ret);
+    if (current->seccomp.mode == SECCOMP_MODE_FILTER && current->seccomp.filter) {
+        spin_lock_irq(&current->sighand->siglock);
+        ksu_seccomp_allow_cache(current->seccomp.filter, __NR_reboot);
+        spin_unlock_irq(&current->sighand->siglock);
+    }
+}
 
 static inline void ksu_handle_extra_susfs_work(void)
 {
@@ -48,7 +63,7 @@ static int handle_zygote_setresuid(uid_t ruid) {
     //   ksu manager.
     // - Disable seccomp restriction for KSU manager since running with "su" will disable seccomp anyway
     if (likely(ksu_is_manager_appid_valid()) && unlikely(is_uid_manager(ruid))) {
-        disable_seccomp();
+        ksu_disable_zygote_seccomp(ruid);
         pr_info("install fd for manager: %d\n", ruid);
         ksu_install_fd();
         return 0;
@@ -64,7 +79,7 @@ static int handle_zygote_setresuid(uid_t ruid) {
 
     // Disable seccomp restriction for root allowed apps since running with "su" will disable seccomp anyway
     if (ksu_is_allow_uid_for_current(ruid)) {
-        disable_seccomp();
+        ksu_disable_zygote_seccomp(ruid);
         return 0;
     }
 
@@ -98,7 +113,7 @@ static int handle_zygote_next_setresuid(uid_t ruid) {
     //   ksu manager.
     // - Disable seccomp restriction for KSU manager since running with "su" will disable seccomp anyway
     if (likely(ksu_is_manager_appid_valid()) && unlikely(is_uid_manager(ruid))) {
-        disable_seccomp();
+        ksu_disable_zygote_seccomp(ruid);
         pr_info("install fd for manager: %d\n", ruid);
         ksu_install_fd();
         return 0;
@@ -115,7 +130,7 @@ static int handle_zygote_next_setresuid(uid_t ruid) {
 
     // Disable seccomp restriction for root allowed apps since running with "su" will disable seccomp anyway
     if (ksu_is_allow_uid_for_current(ruid)) {
-        disable_seccomp();
+        ksu_disable_zygote_seccomp(ruid);
         return 0;
     }
 

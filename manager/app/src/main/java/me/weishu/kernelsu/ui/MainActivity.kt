@@ -203,6 +203,7 @@ import me.weishu.kernelsu.ui.screen.settings.ForegroundToolProtectionScreen
 import me.weishu.kernelsu.ui.screen.settings.ImageToolScreen
 import me.weishu.kernelsu.ui.screen.settings.KpmScreen
 import me.weishu.kernelsu.ui.screen.settings.SusfsPathConfigScreen
+import me.weishu.kernelsu.ui.screen.settings.SusfsGuideScreen
 import me.weishu.kernelsu.ui.screen.settings.RescueProtectionScreen
 import me.weishu.kernelsu.ui.screen.settings.HomeCardWallpaperScreen
 import me.weishu.kernelsu.ui.screen.settings.HomeLayoutScreen
@@ -591,6 +592,7 @@ class MainActivity : ComponentActivity() {
                                     }
                                 }
                                 entry<Route.SusfsPathConfig> { SusfsPathConfigScreen() }
+                                entry<Route.SusfsGuide> { SusfsGuideScreen() }
                                 entry<Route.ForegroundToolProtection> { ForegroundToolProtectionScreen() }
                                 entry<Route.AiChat> { AiChatScreen() }
                                 entry<Route.AiModuleStudio> { AiModuleStudioScreen() }

@@ -355,8 +355,14 @@ runs:
         test -s drivers/kernelsu/feature/sucompat_susfs.c
         test -s drivers/kernelsu/runtime/ksud_integration_susfs.c
         grep -q '^CONFIG_KSU_SUSFS=y$' arch/arm64/configs/gki_defconfig
+        grep -q '^CONFIG_KSU_GKI_SECCOMP_HOOK=y$' arch/arm64/configs/gki_defconfig
         grep -q 'feature/sucompat_susfs.o' drivers/kernelsu/Kbuild
+        grep -q 'feature/seccomp_hook.o' drivers/kernelsu/Kbuild
         grep -q 'ksu_handle_sys_reboot' drivers/kernelsu/supercall/dispatch.c
+        # clone_mnt() must retain whether the mount came from the KSU unshare
+        # allocator. Losing this state can release an invalid mnt_id under load.
+        grep -q 'bool is_mnt_ksu_unshared = false;' fs/namespace.c
+        grep -q 'if (unlikely(is_mnt_ksu_unshared))' fs/namespace.c
         if find . -type f -name '*.rej' -print -quit | grep -q .; then
           echo "::error::SUSFS integration left rejected patch hunks"
           find . -type f -name '*.rej' -print

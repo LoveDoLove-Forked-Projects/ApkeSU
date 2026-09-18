@@ -80,6 +80,20 @@ runs:
           CONFIG_KSU=y
           CONFIG_KPM=y
           CONFIG_ABK_CONTROL=y
+          CONFIG_SECCOMP=y
+          CONFIG_KSU_GKI_SECCOMP_HOOK=y
+
+    - name: Verify GKI Seccomp hook integration
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        GKI_COMMON="${{ github.workspace }}/.gki/kernel/common"
+        test -s "$GKI_COMMON/drivers/kernelsu/feature/seccomp_hook.c"
+        test -s "$GKI_COMMON/drivers/kernelsu/feature/seccomp_hook.h"
+        grep -q '^CONFIG_SECCOMP=y$' "$GKI_COMMON/arch/arm64/configs/gki_defconfig"
+        grep -q '^CONFIG_KSU_GKI_SECCOMP_HOOK=y$' "$GKI_COMMON/arch/arm64/configs/gki_defconfig"
+        grep -q 'feature/seccomp_hook.o' "$GKI_COMMON/drivers/kernelsu/Kbuild"
 
     - name: Export ApkeSU version info
       shell: bash

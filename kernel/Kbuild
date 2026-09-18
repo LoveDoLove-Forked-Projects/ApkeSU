@@ -2,6 +2,7 @@ kernelsu-objs := core/init.o
 
 kernelsu-objs += feature/kernel_umount.o
 kernelsu-objs += feature/sulog.o
+kernelsu-objs += feature/seccomp_hook.o
 ifeq ($(CONFIG_KSU_SUSFS),y)
 kernelsu-objs += feature/sucompat_susfs.o
 else

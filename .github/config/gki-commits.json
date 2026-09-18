@@ -1,11 +1,11 @@
 {
   "susfs": {
-    "gki-android12-5.10": "e466df60670eab2847ea76940be2f8a125c8adc9",
-    "gki-android13-5.10": "805e7e853bf49df671c9efed772a5e744ae6fa9e",
-    "gki-android13-5.15": "01b08bf995c22c25f6361539d6b89435504528d9",
-    "gki-android14-5.15": "a96b41434e401565158b8eb19a4fe8855143ce99",
-    "gki-android14-6.1": "596ec8fcdcb5a6ee366494304333c7fdc76d8862",
-    "gki-android15-6.6": "72997d308cf0d55003ad4695ebde130ef9fc5201",
-    "gki-android16-6.12": "55e16cb62127057f36a16e6a3068217ba5dade31"
+    "gki-android12-5.10": "f3b5aecf53ff8b3296603071b91383f6be6c7cbb",
+    "gki-android13-5.10": "04a9d713106191ba98be680bd7ad9547ab1de964",
+    "gki-android13-5.15": "e565931d19256fd821ada01b35263506e7c7a364",
+    "gki-android14-5.15": "b3c7f19b71b5d46c541094906e46e7c3edfcecc1",
+    "gki-android14-6.1": "273ae364c5b7c92ceb15634c9f075b6fc0501048",
+    "gki-android15-6.6": "9d9464f191b2d846590ac4d1b52e123df135c401",
+    "gki-android16-6.12": "c8f64e41e3dea2cd44754d7472d3cd0bc0b40784"
   }
 }
