@@ -33,4 +33,12 @@ format:
 check-format:
 	find . \( -name "*.c" -o -name "*.h" \) -print0 | xargs -0 clang-format --dry-run --Werror
 
+ifeq ($(CONFIG_KSU_SUSFS),y)
+ifeq ($(wildcard $(srctree)/fs/susfs.c),)
+$(error CONFIG_KSU_SUSFS requires the matching SUSFS GKI source patch)
+endif
+SUSFS_VERSION := $(shell sed -n 's/^#define SUSFS_VERSION[[:space:]]*"\([^"]*\)"/\1/p' $(srctree)/include/linux/susfs.h | head -n 1)
+$(info -- SUSFS version: $(SUSFS_VERSION))
+endif
+
 # Keep a new line here!! Because someone may append config

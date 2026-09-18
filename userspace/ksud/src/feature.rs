@@ -485,51 +485,121 @@ pub fn check_feature(id: &str) -> Result<()> {
     Ok(())
 }
 
+/// 收集被活动模块接管的特性 id（这些特性由模块控制，ksud 不再应用配置）。
+fn managed_feature_ids() -> std::collections::HashSet<u32> {
+    let mut managed = std::collections::HashSet::new();
+    match crate::module::get_managed_features() {
+        Ok(managed_features_map) => {
+            if !managed_features_map.is_empty() {
+                log::info!(
+                    "Found {} modules managing features",
+                    managed_features_map.len()
+                );
+            }
+            for (module_id, feature_list) in &managed_features_map {
+                for feature_name in feature_list {
+                    match parse_feature_id(feature_name) {
+                        Ok(feature_id) => {
+                            managed.insert(feature_id as u32);
+                            log::info!(
+                                "  - feature '{feature_name}' is managed by module '{module_id}'"
+                            );
+                        }
+                        Err(_) => {
+                            log::warn!(
+                                "  - Unknown managed feature '{feature_name}' from module '{module_id}', ignoring"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        Err(e) => log::warn!("Failed to get managed features from modules: {e}"),
+    }
+    managed
+}
+
+fn should_reapply_feature(feature_id: FeatureId, configured: u64, current: u64) -> bool {
+    current != configured || (feature_id == FeatureId::SelinuxHide && configured != 0)
+}
+
+/// Retry configured features that did not become active during post-fs-data.
+///
+/// SELinux hide is retried whenever it is configured on. Its legacy get ABI
+/// reports the requested state, so a failed early hook can otherwise look
+/// active and prevent a later retry.
+pub fn reapply_configured_features() -> Result<()> {
+    let features = load_binary_config()?;
+    if features.is_empty() {
+        return Ok(());
+    }
+
+    let managed = managed_feature_ids();
+    let mut pending: HashMap<u32, u64> = HashMap::new();
+    for (&id, &value) in &features {
+        if managed.contains(&id) {
+            continue;
+        }
+        let Some(feature_id) = FeatureId::from_u32(id) else {
+            continue;
+        };
+        match get_kernel_feature(feature_id) {
+            Ok((current, true)) if should_reapply_feature(feature_id, value, current) => {
+                pending.insert(id, value);
+            }
+            Ok(_) => {}
+            Err(e) => log::warn!("feature {} state unknown: {e}", feature_id.name()),
+        }
+    }
+
+    if pending.is_empty() {
+        log::info!("feature re-apply: all configured features already match");
+        return Ok(());
+    }
+
+    log::info!("feature re-apply: retrying {} feature(s)", pending.len());
+    for (&id, &value) in &pending {
+        if let Some(feature_id) = FeatureId::from_u32(id) {
+            match set_kernel_feature(feature_id, value) {
+                Ok(()) => log::info!("feature {} re-applied ({value})", feature_id.name()),
+                Err(e) => log::warn!(
+                    "feature {} still pending after retry (want {value}): {e:#}",
+                    feature_id.name()
+                ),
+            }
+        }
+    }
+
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{FeatureId, should_reapply_feature};
+
+    #[test]
+    fn selinux_hide_is_retried_when_requested_state_masks_hook_failure() {
+        assert!(should_reapply_feature(FeatureId::SelinuxHide, 1, 1));
+        assert!(!should_reapply_feature(FeatureId::SelinuxHide, 0, 0));
+    }
+
+    #[test]
+    fn other_features_are_only_retried_on_state_mismatch() {
+        assert!(!should_reapply_feature(FeatureId::KernelUmount, 1, 1));
+        assert!(should_reapply_feature(FeatureId::KernelUmount, 1, 0));
+    }
+}
+
 pub fn init_features() -> Result<()> {
     log::info!("Initializing features from config...");
 
     let mut features = load_binary_config()?;
 
-    // Get managed features from active modules and skip them during init
-    if let Ok(managed_features_map) = crate::module::get_managed_features() {
-        if !managed_features_map.is_empty() {
-            log::info!(
-                "Found {} modules managing features",
-                managed_features_map.len()
-            );
-
-            // Build a set of all managed feature IDs to skip
-            for (module_id, feature_list) in &managed_features_map {
-                log::info!(
-                    "Module '{module_id}' manages {} feature(s)",
-                    feature_list.len()
-                );
-
-                for feature_name in feature_list {
-                    if let Ok(feature_id) = parse_feature_id(feature_name) {
-                        let feature_id_u32 = feature_id as u32;
-                        // Remove managed features from config, let modules control them
-                        if features.remove(&feature_id_u32).is_some() {
-                            log::info!(
-                                "  - Skipping managed feature '{feature_name}' (controlled by module: {module_id})",
-                            );
-                        } else {
-                            log::info!(
-                                "  - Feature '{feature_name}' is managed by module '{module_id}', skipping",
-                            );
-                        }
-                    } else {
-                        log::warn!(
-                            "  - Unknown managed feature '{feature_name}' from module '{module_id}', ignoring",
-                        );
-                    }
-                }
-            }
+    // 被模块接管的特性交给模块控制，这里从配置里摘掉
+    for managed_id in managed_feature_ids() {
+        if features.remove(&managed_id).is_some() {
+            log::info!("Skipping module-managed feature {managed_id}");
         }
-    } else {
-        log::warn!(
-            "Failed to get managed features from modules, continuing with normal initialization"
-        );
     }
 
     if features.is_empty() {

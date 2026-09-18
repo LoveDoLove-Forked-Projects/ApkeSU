@@ -113,6 +113,30 @@ static void ksu_install_fd_tw_func(struct callback_head *cb)
     kfree(tw);
 }
 
+#ifdef CONFIG_KSU_SUSFS
+int ksu_supercall_reboot_handler(void __user **arg)
+{
+    struct ksu_install_fd_tw *tw;
+
+    if (!arg || !*arg)
+        return -EINVAL;
+
+    tw = kzalloc(sizeof(*tw), GFP_KERNEL);
+    if (!tw)
+        return -ENOMEM;
+
+    tw->outp = (int __user *)*arg;
+    tw->cb.func = ksu_install_fd_tw_func;
+
+    if (task_work_add(current, &tw->cb, TWA_RESUME)) {
+        kfree(tw);
+        pr_warn("install fd add task_work failed\n");
+        return -EAGAIN;
+    }
+
+    return 0;
+}
+#else
 static int reboot_handler_pre(struct kprobe *p, struct pt_regs *regs)
 {
     struct pt_regs *real_regs = PT_REAL_REGS(regs);
@@ -143,23 +167,30 @@ static struct kprobe reboot_kp = {
     .symbol_name = REBOOT_SYMBOL,
     .pre_handler = reboot_handler_pre,
 };
+#endif
 
 void __init ksu_supercalls_init(void)
 {
+#ifndef CONFIG_KSU_SUSFS
     int rc;
+#endif
 
     ksu_supercall_dump_commands();
 
+#ifndef CONFIG_KSU_SUSFS
     rc = register_kprobe(&reboot_kp);
     if (rc) {
         pr_err("reboot kprobe failed: %d\n", rc);
     } else {
         pr_info("reboot kprobe registered successfully\n");
     }
+#endif
 }
 
 void __exit ksu_supercalls_exit(void)
 {
+#ifndef CONFIG_KSU_SUSFS
     unregister_kprobe(&reboot_kp);
+#endif
     ksu_supercall_cleanup_state();
 }

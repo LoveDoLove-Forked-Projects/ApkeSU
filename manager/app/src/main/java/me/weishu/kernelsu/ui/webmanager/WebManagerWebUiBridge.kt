@@ -10,9 +10,10 @@ internal val WEBUI_BRIDGE_SCRIPT_TEMPLATE: String = """
   var moduleId = __MODULE_ID__;
   var moduleInfoJson = __MODULE_INFO_JSON__;
   var packageData = __PACKAGE_DATA__;
+  var tokenPrefix = __TOKEN_PREFIX__;
 
   function endpoint(path) {
-    return path + (path.indexOf("?") >= 0 ? "&" : "?") +
+    return tokenPrefix + path + (path.indexOf("?") >= 0 ? "&" : "?") +
       "module=" + encodeURIComponent(moduleId);
   }
 
@@ -163,7 +164,7 @@ internal val WEBUI_BRIDGE_SCRIPT_TEMPLATE: String = """
   function iconUrl(value) {
     var text = String(value || "");
     return text.indexOf("ksu://icon/") === 0
-      ? "/api/webui/icon/" + encodeURIComponent(text.substring(11)) +
+      ? tokenPrefix + "/api/webui/icon/" + encodeURIComponent(text.substring(11)) +
         "?module=" + encodeURIComponent(moduleId)
       : value;
   }

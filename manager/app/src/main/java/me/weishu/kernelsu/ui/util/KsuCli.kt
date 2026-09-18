@@ -73,13 +73,25 @@ const val HIDDEN_PATH_CONFIG_MIME_TYPE = "application/json"
 const val HIDDEN_PATH_MAX_AUTO_LOAD_DELAY_SECONDS = 300
 private const val SUSFS_PATH_CONFIG_DIR = "/data/adb/ksu/susfs"
 private const val SUSFS_PATH_CONFIG_FILE = "$SUSFS_PATH_CONFIG_DIR/paths.txt"
+private const val SUSFS_PATH_LOOP_CONFIG_FILE = "$SUSFS_PATH_CONFIG_DIR/path_loop.txt"
+private const val SUSFS_MAP_CONFIG_FILE = "$SUSFS_PATH_CONFIG_DIR/sus_maps.txt"
+private const val SUSFS_OPEN_REDIRECT_CONFIG_FILE = "$SUSFS_PATH_CONFIG_DIR/open_redirect.txt"
+private const val SUSFS_KSTAT_CONFIG_FILE = "$SUSFS_PATH_CONFIG_DIR/sus_kstat_statically.txt"
+private const val SUSFS_SETTINGS_CONFIG_FILE = "$SUSFS_PATH_CONFIG_DIR/settings.conf"
 private const val SUSFS_PATH_SERVICE_FILE = "/data/adb/service.d/98-apkesu-susfs-paths.sh"
 private const val SUSFS_PATH_FEATURE = "CONFIG_KSU_SUSFS_SUS_PATH"
 private const val SUSFS_PATH_LOOP_FEATURE = "CONFIG_KSU_SUSFS_SUS_PATH_LOOP"
 private const val SUSFS_TRY_UMOUNT_FEATURE = "CONFIG_KSU_SUSFS_TRY_UMOUNT"
 private const val SUSFS_KSTAT_FEATURE = "CONFIG_KSU_SUSFS_SUS_KSTAT"
+private const val SUSFS_KSTAT_STATIC_FEATURE = "CONFIG_KSU_SUSFS_SUS_KSTAT_STATICALLY"
 private const val SUSFS_OPEN_REDIRECT_FEATURE = "CONFIG_KSU_SUSFS_OPEN_REDIRECT"
+private const val SUSFS_MAP_FEATURE = "CONFIG_KSU_SUSFS_SUS_MAP"
+private const val SUSFS_UNAME_FEATURE = "CONFIG_KSU_SUSFS_SPOOF_UNAME"
+private const val SUSFS_CMDLINE_FEATURE = "CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG"
+private const val SUSFS_AVC_FEATURE = "CONFIG_KSU_SUSFS_AVC_LOG_SPOOFING"
+private const val SUSFS_HIDE_MNTS_FEATURE = "CONFIG_KSU_SUSFS_HIDE_SUS_MNTS_FOR_NON_SU_PROCS"
 private const val SUSFS_PATH_CONFIG_MAX_BYTES = 64 * 1024
+private const val SUSFS_CONFIG_MAX_BYTES = 256 * 1024
 private const val SUSFS_EXTERNAL_STORAGE_WAIT_ATTEMPTS = 100
 private const val SUSFS_PATH_APPLY_TIMEOUT_MILLIS = 130_000L
 private const val GRAPHICS_RENDERER_DIR = "/data/adb/apkesu/graphics_renderer"
@@ -334,12 +346,39 @@ data class SusfsCapabilities(
     val supportsTryUmount: Boolean = false,
     val supportsKstat: Boolean = false,
     val supportsOpenRedirect: Boolean = false,
+    val supportsSusMap: Boolean = false,
+    val supportsUnameSpoof: Boolean = false,
+    val supportsCmdlineSpoof: Boolean = false,
+    val supportsAvcLogSpoofing: Boolean = false,
+    val supportsHideSusMounts: Boolean = false,
+)
+
+data class SusfsOpenRedirectEntry(
+    val originalPath: String,
+    val redirectedPath: String,
+    val uidScheme: String = "",
+)
+
+data class SusfsKstatEntry(
+    val arguments: List<String>,
 )
 
 data class SusfsPathConfigState(
     val available: Boolean = false,
     val toolPath: String = "",
     val paths: List<String> = emptyList(),
+    val loopPaths: List<String> = emptyList(),
+    val susMaps: List<String> = emptyList(),
+    val openRedirects: List<SusfsOpenRedirectEntry> = emptyList(),
+    val kstatEntries: List<SusfsKstatEntry> = emptyList(),
+    val enabled: Boolean = true,
+    val logging: Boolean = false,
+    val avcLogSpoofing: Boolean = false,
+    val hideSusMntsForNonSuProcs: Boolean = false,
+    val hideSusMntsForAllProcs: Boolean = false,
+    val unameRelease: String = "",
+    val unameVersion: String = "",
+    val cmdlineOrBootconfig: String = "",
     val capabilities: SusfsCapabilities = SusfsCapabilities(),
     val error: String = "",
 )
@@ -347,7 +386,14 @@ data class SusfsPathConfigState(
 data class SusfsPathApplyResult(
     val success: Boolean = false,
     val appliedCount: Int = 0,
+    val skippedCount: Int = 0,
     val requiresReboot: Boolean = false,
+    val error: String = "",
+)
+
+data class SusfsBackupImportResult(
+    val config: SusfsPathConfigState? = null,
+    val warnings: List<String> = emptyList(),
     val error: String = "",
 )
 
@@ -1026,6 +1072,56 @@ suspend fun getKpmCaps(): KpmCaps {
     }.getOrElse { error ->
         KpmCaps(error = "Invalid KPM capability response: ${error.message.orEmpty()}")
     }
+}
+
+/** KPM 是否在内核中可用：任一后端能力/加载器就绪即视为可用。 */
+internal fun KpmCaps.isAvailable(): Boolean = kernelSupported ||
+    supported ||
+    loaderReady ||
+    managementAvailable ||
+    capabilities != 0
+
+/**
+ * `ksud kpm list` 输出里 `"loaded": true` 的条目数；输出不可解析时返回 null。
+ * KPM 运行时状态未知时 ksud 会把 loaded 写成 null，此时不应计入。
+ */
+internal fun countLiveKpmModules(listJson: String): Int? = runCatching {
+    val array = JSONArray(listJson)
+    (0 until array.length()).count { index ->
+        array.optJSONObject(index)?.optBoolean("loaded", false) == true
+    }
+}.getOrNull()
+
+/** 设备信息卡片用的 KPM 一行摘要；没有 KPM 支持时返回空串，调用方隐藏该行。 */
+internal fun buildKpmSummary(caps: KpmCaps, loadedCount: Int?): String {
+    if (!caps.isAvailable() && loadedCount == null) return ""
+    val parts = ArrayList<String>(4)
+    parts += when {
+        caps.supported -> "已启用"
+        caps.loaderReady -> "已就绪"
+        else -> "内核支持"
+    }
+    loadedCount?.let { parts += "已加载 $it 个" }
+    if (caps.maxLoaded > 0) parts += "上限 ${caps.maxLoaded}"
+    if (caps.abiVersion > 0) parts += "ABI v${caps.abiVersion}"
+    if (!caps.policyEnabled) parts += "策略已关闭"
+    if (caps.lateLoad) parts += "晚加载模式"
+    return parts.joinToString(" · ")
+}
+
+/**
+ * 设备信息卡片用的 KPM 摘要；内核不支持或 ksud 不可用时返回空串。
+ * 摘要必须能自证：加载数量来自 `ksud kpm list`，读不到就只报能力。
+ */
+suspend fun probeKpmSummary(): String {
+    val caps = runCatching { getKpmCaps() }.getOrNull() ?: return ""
+    if (!caps.isAvailable()) return ""
+    val loadedCount = runCatching { getKpmList() }
+        .getOrNull()
+        ?.takeIf { it.success }
+        ?.output
+        ?.let(::countLiveKpmModules)
+    return buildKpmSummary(caps, loadedCount)
 }
 
 suspend fun setKpmPolicy(enabled: Boolean): KpmCommandResult {
@@ -1959,6 +2055,266 @@ internal fun parseSusfsFeatureNames(raw: String): Set<String> = raw
     .filter { it.startsWith("CONFIG_KSU_SUSFS_") }
     .toSet()
 
+private fun JSONObject.firstString(vararg names: String): String = names
+    .asSequence()
+    .map { optString(it, "").trim() }
+    .firstOrNull { it.isNotEmpty() }
+    .orEmpty()
+
+private fun normalizeSusfsArgument(raw: String): String? {
+    val value = raw.trim()
+    return value.takeIf {
+        it.isNotEmpty() &&
+            it.length <= 4096 &&
+            !it.any(Char::isISOControl) &&
+            !it.contains('|')
+    }
+}
+
+internal fun normalizeSusfsMapPath(raw: String): String? {
+    val trimmed = raw.trim()
+    if (
+        trimmed.isEmpty() ||
+        !trimmed.startsWith('/') ||
+        trimmed == "/" ||
+        trimmed.length > 4096 ||
+        trimmed.any(Char::isISOControl)
+    ) return null
+    val normalized = trimmed.trimEnd('/').ifEmpty { return null }
+    // sus_map hides references in process maps. Keep individual module entries
+    // importable, but never accept the management roots themselves.
+    if (normalized == "/data/adb" || normalized == "/data/adb/ksu" || normalized == "/data/adb/ap") {
+        return null
+    }
+    return normalized
+}
+
+private fun parseSusfsKstatEntry(json: JSONObject): SusfsKstatEntry? {
+    val arguments = buildList {
+        json.optJSONArray("args")?.let { array ->
+            for (index in 0 until array.length()) {
+                normalizeSusfsArgument(array.optString(index, ""))?.let(::add)
+            }
+        }
+        if (isEmpty()) {
+            // SUSFS exports static kstat entries as named stat fields. Keep the
+            // documented order so imported v1/v2 backups remain executable.
+            listOf(
+                "path", "ino", "dev", "nlink", "size", "atime", "atime_nsec",
+                "mtime", "mtime_nsec", "ctime", "ctime_nsec", "blocks", "blksize",
+            ).forEach { key ->
+                if (json.has(key)) normalizeSusfsArgument(json.optString(key, ""))?.let(::add)
+            }
+        }
+    }
+    return arguments.takeIf { it.isNotEmpty() }?.let(::SusfsKstatEntry)
+}
+
+/** Parses the SUSFS module's version-2 backup without touching the device. */
+internal fun parseSusfsBackupJson(raw: String): SusfsBackupImportResult = runCatching {
+    val root = JSONObject(raw)
+    val version = root.optInt("version", 1)
+    val warnings = mutableListOf<String>()
+    if (version > 2) warnings += "backup_version_$version"
+
+    val loopPaths = buildList {
+        val array = root.optJSONArray("sus_path")
+        if (array != null) {
+            for (index in 0 until array.length()) {
+                val item = array.optJSONObject(index) ?: continue
+                if (!item.optBoolean("is_loop", false)) continue
+                val rawPath = item.firstString("path", "target")
+                val path = normalizeSusfsPath(rawPath)
+                if (path == null) {
+                    if (rawPath.isNotBlank()) warnings += "skipped_path:$rawPath"
+                } else if (path !in this) {
+                    add(path)
+                }
+            }
+        }
+    }
+    val actualNormalPaths = buildList {
+        val array = root.optJSONArray("sus_path")
+        if (array != null) {
+            for (index in 0 until array.length()) {
+                val item = array.opt(index)
+                val path = when (item) {
+                    is JSONObject -> item.firstString("path", "target")
+                    else -> item?.toString().orEmpty()
+                }
+                if (item !is JSONObject || !item.optBoolean("is_loop", false)) {
+                    val normalized = normalizeSusfsPath(path)
+                    if (normalized == null) {
+                        if (path.isNotBlank()) warnings += "skipped_path:$path"
+                    } else if (normalized !in this) {
+                        add(normalized)
+                    }
+                }
+            }
+        }
+    }
+
+    val maps = buildList {
+        val array = root.optJSONArray("sus_map")
+        if (array != null) {
+            for (index in 0 until array.length()) {
+                val path = normalizeSusfsMapPath(array.optString(index, ""))
+                if (path == null) {
+                    if (array.optString(index, "").isNotBlank()) warnings += "skipped_map"
+                } else if (path !in this) add(path)
+            }
+        }
+    }
+    val redirects = buildList {
+        val array = root.optJSONArray("open_redirect")
+        if (array != null) {
+            for (index in 0 until array.length()) {
+                val item = array.optJSONObject(index) ?: continue
+                val original = normalizeSusfsPath(item.firstString("original", "original_path", "path"))
+                val redirected = normalizeSusfsPath(item.firstString("redirected", "redirected_path", "target"))
+                if (original == null || redirected == null) {
+                    warnings += "skipped_open_redirect"
+                    continue
+                }
+                val uidScheme = item.firstString("uid_scheme", "uidScheme")
+                if (uidScheme.isNotEmpty() && uidScheme.any { !it.isDigit() }) {
+                    warnings += "skipped_open_redirect_uid"
+                    continue
+                }
+                add(SusfsOpenRedirectEntry(original, redirected, uidScheme))
+            }
+        }
+    }.distinct()
+    val kstats = buildList {
+        val array = root.optJSONArray("sus_kstat")
+        if (array != null) {
+            for (index in 0 until array.length()) {
+                val item = array.optJSONObject(index) ?: continue
+                parseSusfsKstatEntry(item)?.let(::add) ?: run { warnings += "skipped_sus_kstat" }
+            }
+        }
+    }
+    val uname = root.optJSONObject("uname")
+    val cmdline = root.optString("cmdline_or_bootconfig", "").trim()
+
+    SusfsBackupImportResult(
+        config = SusfsPathConfigState(
+            paths = actualNormalPaths,
+            loopPaths = loopPaths,
+            susMaps = maps,
+            openRedirects = redirects,
+            kstatEntries = kstats,
+            enabled = root.optBoolean("enabled", true),
+            logging = root.optBoolean("logging", false),
+            avcLogSpoofing = root.optBoolean("avc_log_spoofing", false),
+            hideSusMntsForNonSuProcs = root.optBoolean("hide_sus_mnts_for_non_su_procs", false),
+            hideSusMntsForAllProcs = root.optBoolean("hide_sus_mnts_for_all_procs", false),
+            unameRelease = uname?.firstString("release", "kernel_release").orEmpty(),
+            unameVersion = uname?.firstString("version", "build").orEmpty(),
+            cmdlineOrBootconfig = cmdline,
+        ),
+        warnings = warnings.distinct(),
+    )
+}.getOrElse { error ->
+    SusfsBackupImportResult(error = error.message.orEmpty().ifBlank { "invalid_backup" })
+}
+
+internal fun parseSusfsConfigOutput(
+    lines: List<String>,
+    capabilities: SusfsCapabilities,
+): SusfsPathConfigState {
+    fun value(prefix: String): String = lines.firstOrNull { it.startsWith(prefix) }
+        ?.substringAfter('=').orEmpty().trim()
+    fun setting(name: String): String = value("__SETTING__$name=")
+    fun values(prefix: String): List<String> = lines.asSequence()
+        .filter { it.startsWith(prefix) }
+        .map { it.substringAfter('=') }
+        .mapNotNull(::normalizeSusfsPath)
+        .distinct()
+        .toList()
+    val redirects = lines.asSequence()
+        .filter { it.startsWith("__REDIRECT__=") }
+        .map { it.substringAfter('=') }
+        .map { it.split('|', limit = 3) }
+        .mapNotNull { parts ->
+            if (parts.size < 2) return@mapNotNull null
+            val original = normalizeSusfsPath(parts[0]) ?: return@mapNotNull null
+            val redirected = normalizeSusfsPath(parts[1]) ?: return@mapNotNull null
+            SusfsOpenRedirectEntry(original, redirected, parts.getOrElse(2) { "" })
+        }
+        .distinct()
+        .toList()
+    val kstats = lines.asSequence()
+        .filter { it.startsWith("__KSTAT__=") }
+        .map { it.substringAfter('=') }
+        .map { it.split('|').mapNotNull(::normalizeSusfsArgument) }
+        .filter { it.isNotEmpty() }
+        .map(::SusfsKstatEntry)
+        .toList()
+    return SusfsPathConfigState(
+        available = value("__TOOL__=").isNotBlank() && capabilities.supportsAddSusPath,
+        toolPath = value("__TOOL__="),
+        paths = values("__PATH__="),
+        loopPaths = values("__LOOP__="),
+        susMaps = lines.asSequence()
+            .filter { it.startsWith("__MAP__=") }
+            .map { it.substringAfter('=') }
+            .mapNotNull(::normalizeSusfsMapPath)
+            .distinct()
+            .toList(),
+        openRedirects = redirects,
+        kstatEntries = kstats,
+        enabled = setting("enabled") != "0",
+        logging = setting("logging") == "1",
+        avcLogSpoofing = setting("avc_log_spoofing") == "1",
+        hideSusMntsForNonSuProcs = setting("hide_sus_mnts_for_non_su_procs") == "1",
+        hideSusMntsForAllProcs = setting("hide_sus_mnts_for_all_procs") == "1",
+        unameRelease = setting("uname_release"),
+        unameVersion = setting("uname_version"),
+        cmdlineOrBootconfig = setting("cmdline_or_bootconfig"),
+        capabilities = capabilities,
+        error = when {
+            value("__TOOL__=").isBlank() -> "tool_unavailable"
+            !capabilities.supportsAddSusPath -> "path_feature_unavailable"
+            else -> ""
+        },
+    )
+}
+
+internal fun buildSusfsBackupJson(config: SusfsPathConfigState): String {
+    val root = JSONObject()
+        .put("version", 2)
+        .put("enabled", config.enabled)
+        .put("cmdline_or_bootconfig", config.cmdlineOrBootconfig)
+        .put("avc_log_spoofing", config.avcLogSpoofing)
+        .put("logging", config.logging)
+        .put("hide_sus_mnts_for_non_su_procs", config.hideSusMntsForNonSuProcs)
+        .put("hide_sus_mnts_for_all_procs", config.hideSusMntsForAllProcs)
+    root.put(
+        "uname",
+        JSONObject().put("version", config.unameVersion).put("release", config.unameRelease),
+    )
+    root.put("sus_path", JSONArray().apply {
+        config.paths.forEach { put(JSONObject().put("path", it).put("is_loop", false)) }
+        config.loopPaths.forEach { put(JSONObject().put("path", it).put("is_loop", true)) }
+    })
+    root.put("sus_kstat", JSONArray().apply {
+        config.kstatEntries.forEach { put(JSONObject().put("args", JSONArray(it.arguments))) }
+    })
+    root.put("open_redirect", JSONArray().apply {
+        config.openRedirects.forEach {
+            put(
+                JSONObject()
+                    .put("original", it.originalPath)
+                    .put("redirected", it.redirectedPath)
+                    .put("uid_scheme", it.uidScheme),
+            )
+        }
+    })
+    root.put("sus_map", JSONArray(config.susMaps))
+    return root.toString(2)
+}
+
 private fun SusfsVersion.atLeast(major: Int, minor: Int, patch: Int): Boolean =
     compareValuesBy(this, SusfsVersion(major, minor, patch), SusfsVersion::major, SusfsVersion::minor, SusfsVersion::patch) >= 0
 
@@ -2000,9 +2356,97 @@ internal fun buildSusfsCapabilities(
             (!featureProbeSucceeded && version?.atLeast(1, 5, 9) == true),
         supportsTryUmount = has(SUSFS_TRY_UMOUNT_FEATURE) ||
             (!featureProbeSucceeded && version?.atLeast(1, 5, 3) == true),
-        supportsKstat = has(SUSFS_KSTAT_FEATURE) ||
+        supportsKstat = has(SUSFS_KSTAT_FEATURE) || has(SUSFS_KSTAT_STATIC_FEATURE) ||
             (!featureProbeSucceeded && version?.atLeast(2, 0, 0) == true),
         supportsOpenRedirect = has(SUSFS_OPEN_REDIRECT_FEATURE),
+        supportsSusMap = has(SUSFS_MAP_FEATURE),
+        supportsUnameSpoof = has(SUSFS_UNAME_FEATURE) ||
+            (!featureProbeSucceeded && version?.atLeast(1, 5, 0) == true),
+        supportsCmdlineSpoof = has(SUSFS_CMDLINE_FEATURE) ||
+            (!featureProbeSucceeded && version?.atLeast(1, 5, 4) == true),
+        // These two commands are part of the SUSFS runtime ABI and are
+        // version-gated in the reference module rather than exposed as a
+        // stable CONFIG symbol on every release.
+        supportsAvcLogSpoofing = has(SUSFS_AVC_FEATURE) ||
+            (!featureProbeSucceeded && version?.atLeast(1, 5, 3) == true),
+        supportsHideSusMounts = has(SUSFS_HIDE_MNTS_FEATURE) ||
+            has("CONFIG_KSU_SUSFS_HIDE_SUS_MNTS_FOR_ALL_PROCS") ||
+            (!featureProbeSucceeded && version?.atLeast(1, 5, 7) == true),
+    )
+}
+
+/** 设备信息卡片用的 SUSFS 一行摘要；既没有工具也没有挂载痕迹时返回空串。 */
+internal fun buildSusfsSummary(
+    toolPath: String,
+    version: String,
+    featureCount: Int,
+    mountCount: Int,
+    hiddenPathCount: Int,
+): String {
+    if (version.isBlank() && mountCount <= 0) return ""
+    val parts = ArrayList<String>(5)
+    parts += version.ifBlank { "已检测到挂载" }
+    if (featureCount > 0) parts += "特性 $featureCount 项"
+    // mountCount 统计 /proc/mounts 里出现 susfs 的挂载条目（SUSFS 的 sus mount 会以此形式出现）
+    if (mountCount > 0) parts += "挂载 $mountCount 项"
+    if (hiddenPathCount > 0) parts += "隐藏路径 $hiddenPathCount 条"
+    if (toolPath.isBlank()) parts += "未找到 ksu_susfs"
+    return parts.joinToString(" · ")
+}
+
+/**
+ * 探测 SUSFS：先找 ksu_susfs 工具读版本与已启用特性，再统计挂载痕迹与已配置的隐藏路径。
+ * 没有 SUSFS 的内核返回空串，调用方隐藏该行。
+ */
+suspend fun probeSusfsSummary(): String = withContext(Dispatchers.IO) {
+    if (shouldSkipUnsafeKsudCommand()) return@withContext ""
+    val stdout = ArrayList<String>()
+    val stderr = ArrayList<String>()
+    val command = buildString {
+        appendLine("tool=''")
+        appendLine("for candidate in /data/adb/ksu/bin/ksu_susfs /data/adb/ap/bin/ksu_susfs /system/bin/ksu_susfs; do")
+        appendLine("  if [ -f \"${'$'}candidate\" ] && [ -x \"${'$'}candidate\" ]; then tool=\"${'$'}candidate\"; break; fi")
+        appendLine("done")
+        appendLine("if [ -z \"${'$'}tool\" ]; then tool=\$(command -v ksu_susfs 2>/dev/null); fi")
+        appendLine("printf '__TOOL__=%s\\n' \"${'$'}tool\"")
+        appendLine("version=''")
+        appendLine("features=0")
+        appendLine("if [ -n \"${'$'}tool\" ]; then")
+        appendLine("  version=\"\$(\"${'$'}tool\" show version 2>/dev/null | sed -n '1p')\"")
+        appendLine("  feature_output=\"\$(\"${'$'}tool\" show enabled_features 2>/dev/null)\"")
+        appendLine("  if [ -n \"${'$'}feature_output\" ]; then features=\$(printf '%s\\n' \"${'$'}feature_output\" | grep -c .); fi")
+        appendLine("fi")
+        appendLine("printf '__VERSION__=%s\\n' \"${'$'}version\"")
+        appendLine("printf '__FEATURES__=%s\\n' \"${'$'}features\"")
+        appendLine("printf '__MOUNTS__=%s\\n' \"\$(grep -ci susfs /proc/mounts 2>/dev/null)\"")
+        appendLine("hidden=0")
+        appendLine("if [ -f ${shellQuote(SUSFS_PATH_CONFIG_FILE)} ]; then")
+        appendLine("  hidden=\$(grep -c . ${shellQuote(SUSFS_PATH_CONFIG_FILE)} 2>/dev/null)")
+        appendLine("fi")
+        appendLine("printf '__HIDDEN__=%s\\n' \"${'$'}hidden\"")
+    }
+    val result = runCatching {
+        withTimeoutOrNull(SHELL_JOB_TIMEOUT_MILLIS) {
+            getRootShell().newJob().add(command).to(stdout, stderr).exec()
+        }
+    }.getOrElse { error ->
+        KsuCli.reset()
+        return@withContext ""
+    } ?: run {
+        KsuCli.reset()
+        return@withContext ""
+    }
+    if (!result.isSuccess) return@withContext ""
+    fun field(name: String): String = stdout.firstOrNull { it.startsWith("$name=") }
+        ?.substringAfter('=')
+        ?.trim()
+        .orEmpty()
+    buildSusfsSummary(
+        toolPath = field("__TOOL__"),
+        version = field("__VERSION__"),
+        featureCount = field("__FEATURES__").toIntOrNull() ?: 0,
+        mountCount = field("__MOUNTS__").toIntOrNull() ?: 0,
+        hiddenPathCount = field("__HIDDEN__").toIntOrNull() ?: 0,
     )
 }
 
@@ -2039,11 +2483,20 @@ suspend fun getSusfsPathConfig(): SusfsPathConfigState = withContext(Dispatchers
         appendLine("printf '__VERSION__=%s\\n' \"${'$'}version\"")
         appendLine("printf '__FEATURE_PROBE__=%s\\n' \"${'$'}feature_probe\"")
         appendLine("printf '__FEATURES__=%s\\n' \"${'$'}features\"")
+        appendLine("for setting in enabled logging avc_log_spoofing hide_sus_mnts_for_non_su_procs hide_sus_mnts_for_all_procs uname_release uname_version cmdline_or_bootconfig; do")
+        appendLine("  setting_value=")
+        appendLine("  if [ -f ${shellQuote(SUSFS_SETTINGS_CONFIG_FILE)} ]; then setting_value=\$(sed -n \"s/^${'$'}setting=//p\" ${shellQuote(SUSFS_SETTINGS_CONFIG_FILE)} | sed -n '1p'); fi")
+        appendLine("  printf '__SETTING__%s=%s\\n' \"${'$'}setting\" \"${'$'}setting_value\"")
+        appendLine("done")
         appendLine("if [ -f ${shellQuote(SUSFS_PATH_CONFIG_FILE)} ]; then")
         appendLine("  while IFS= read -r target_path; do")
         appendLine("    [ -n \"${'$'}target_path\" ] && printf '__PATH__=%s\\n' \"${'$'}target_path\"")
         appendLine("  done < ${shellQuote(SUSFS_PATH_CONFIG_FILE)}")
         appendLine("fi")
+        appendLine("if [ -f ${shellQuote(SUSFS_PATH_LOOP_CONFIG_FILE)} ]; then while IFS= read -r target_path; do [ -n \"${'$'}target_path\" ] && printf '__LOOP__=%s\\n' \"${'$'}target_path\"; done < ${shellQuote(SUSFS_PATH_LOOP_CONFIG_FILE)}; fi")
+        appendLine("if [ -f ${shellQuote(SUSFS_MAP_CONFIG_FILE)} ]; then while IFS= read -r target_path; do [ -n \"${'$'}target_path\" ] && printf '__MAP__=%s\\n' \"${'$'}target_path\"; done < ${shellQuote(SUSFS_MAP_CONFIG_FILE)}; fi")
+        appendLine("if [ -f ${shellQuote(SUSFS_OPEN_REDIRECT_CONFIG_FILE)} ]; then while IFS= read -r redirect; do [ -n \"${'$'}redirect\" ] && printf '__REDIRECT__=%s\\n' \"${'$'}redirect\"; done < ${shellQuote(SUSFS_OPEN_REDIRECT_CONFIG_FILE)}; fi")
+        appendLine("if [ -f ${shellQuote(SUSFS_KSTAT_CONFIG_FILE)} ]; then while IFS= read -r kstat; do [ -n \"${'$'}kstat\" ] && printf '__KSTAT__=%s\\n' \"${'$'}kstat\"; done < ${shellQuote(SUSFS_KSTAT_CONFIG_FILE)}; fi")
     }
     val result = runCatching {
         withTimeoutOrNull(SHELL_JOB_TIMEOUT_MILLIS) {
@@ -2090,83 +2543,167 @@ suspend fun getSusfsPathConfig(): SusfsPathConfigState = withContext(Dispatchers
         featureText = featureText,
         featureProbeSucceeded = featureProbeSucceeded,
     )
-    SusfsPathConfigState(
+    parseSusfsConfigOutput(stdout, capabilities).copy(
         available = capabilities.supportsAddSusPath,
         toolPath = toolPath,
         paths = paths,
-        capabilities = capabilities,
-        error = when {
-            toolPath.isBlank() -> "tool_unavailable"
-            !capabilities.supportsAddSusPath -> "path_feature_unavailable"
-            else -> ""
-        },
     )
 }
 
-suspend fun saveAndApplySusfsPathConfig(paths: List<String>): SusfsPathApplyResult = withContext(Dispatchers.IO) {
+private fun susfsLineListText(values: List<String>): String =
+    values.joinToString(separator = "\n", postfix = if (values.isEmpty()) "" else "\n")
+
+private fun isValidSusfsSettingValue(value: String): Boolean =
+    value.length <= 4096 && !value.any(Char::isISOControl) && !value.contains('=')
+
+internal fun validateSusfsConfig(config: SusfsPathConfigState): String {
+    val allPathCount = config.paths.size + config.loopPaths.size + config.susMaps.size
+    if (allPathCount > 256 || config.openRedirects.size > 64 || config.kstatEntries.size > 128) {
+        return "too_many_entries"
+    }
+    if (config.paths.mapNotNull(::normalizeSusfsPath).distinct().size != config.paths.size) return "invalid_path"
+    if (config.loopPaths.mapNotNull(::normalizeSusfsPath).distinct().size != config.loopPaths.size) return "invalid_loop_path"
+    if (config.susMaps.mapNotNull(::normalizeSusfsMapPath).distinct().size != config.susMaps.size) return "invalid_sus_map"
+    if (config.openRedirects.any { entry ->
+            normalizeSusfsPath(entry.originalPath) == null ||
+                normalizeSusfsPath(entry.redirectedPath) == null ||
+                (entry.uidScheme.isNotBlank() && entry.uidScheme.any { !it.isDigit() })
+        }
+    ) return "invalid_open_redirect"
+    if (config.kstatEntries.any { entry ->
+            entry.arguments.size != 13 || entry.arguments.any { normalizeSusfsArgument(it) == null }
+        }
+    ) return "invalid_sus_kstat"
+    if (
+        !isValidSusfsSettingValue(config.unameRelease) ||
+        !isValidSusfsSettingValue(config.unameVersion) ||
+        !isValidSusfsSettingValue(config.cmdlineOrBootconfig)
+    ) return "invalid_setting"
+    return ""
+}
+
+private fun editableSusfsConfigEquals(
+    first: SusfsPathConfigState,
+    second: SusfsPathConfigState,
+): Boolean = first.enabled == second.enabled &&
+    first.paths == second.paths &&
+    first.loopPaths == second.loopPaths &&
+    first.susMaps == second.susMaps &&
+    first.openRedirects == second.openRedirects &&
+    first.kstatEntries == second.kstatEntries &&
+    first.logging == second.logging &&
+    first.avcLogSpoofing == second.avcLogSpoofing &&
+    first.hideSusMntsForNonSuProcs == second.hideSusMntsForNonSuProcs &&
+    first.hideSusMntsForAllProcs == second.hideSusMntsForAllProcs &&
+    first.unameRelease == second.unameRelease &&
+    first.unameVersion == second.unameVersion &&
+    first.cmdlineOrBootconfig == second.cmdlineOrBootconfig
+
+suspend fun saveAndApplySusfsPathConfig(paths: List<String>): SusfsPathApplyResult {
+    val current = getSusfsPathConfig()
+    if (!current.available) return SusfsPathApplyResult(error = current.error.ifBlank { "tool_unavailable" })
+    return saveAndApplySusfsConfig(current.copy(paths = paths))
+}
+
+suspend fun saveAndApplySusfsConfig(config: SusfsPathConfigState): SusfsPathApplyResult = withContext(Dispatchers.IO) {
     if (shouldSkipUnsafeKsudCommand()) {
         return@withContext SusfsPathApplyResult(error = "root_unavailable")
     }
     if (Natives.isLateLoadMode || Natives.isLkmMode) {
         return@withContext SusfsPathApplyResult(error = "gki_mode_required")
     }
-    if (paths.size > 128) {
-        return@withContext SusfsPathApplyResult(error = "too_many_paths")
+    validateSusfsConfig(config).takeIf(String::isNotEmpty)?.let { error ->
+        return@withContext SusfsPathApplyResult(error = error)
     }
-    val normalized = paths.mapNotNull(::normalizeSusfsPath).distinct()
-    if (normalized.size != paths.size) {
-        return@withContext SusfsPathApplyResult(error = "invalid_path")
-    }
-    val configText = normalized.joinToString(separator = "\n", postfix = if (normalized.isEmpty()) "" else "\n")
-    if (configText.toByteArray(Charsets.UTF_8).size > SUSFS_PATH_CONFIG_MAX_BYTES) {
-        return@withContext SusfsPathApplyResult(error = "config_too_large")
-    }
-
     val previous = getSusfsPathConfig()
     if (!previous.available || !previous.capabilities.supportsAddSusPath) {
         return@withContext SusfsPathApplyResult(error = previous.error.ifBlank { "tool_unavailable" })
     }
-    val requiresReboot = previous.paths.any { it !in normalized }
-    val additions = normalized.filterNot(previous.paths::contains)
-    val prepareExternalStorageRoots = shouldPrepareSusfsExternalStorageRoots(
-        versionText = previous.capabilities.version,
-        paths = additions,
+    if (config.loopPaths.isNotEmpty() && !previous.capabilities.supportsPathLoop) {
+        return@withContext SusfsPathApplyResult(error = "path_loop_unavailable")
+    }
+    if (config.susMaps.isNotEmpty() && !previous.capabilities.supportsSusMap) {
+        return@withContext SusfsPathApplyResult(error = "sus_map_unavailable")
+    }
+    if (config.openRedirects.isNotEmpty() && !previous.capabilities.supportsOpenRedirect) {
+        return@withContext SusfsPathApplyResult(error = "open_redirect_unavailable")
+    }
+    if (config.kstatEntries.isNotEmpty() && !previous.capabilities.supportsKstat) {
+        return@withContext SusfsPathApplyResult(error = "sus_kstat_unavailable")
+    }
+    if (config.cmdlineOrBootconfig.isNotBlank() && !previous.capabilities.supportsCmdlineSpoof) {
+        return@withContext SusfsPathApplyResult(error = "cmdline_unavailable")
+    }
+    if (
+        (config.unameRelease.isNotBlank() || config.unameVersion.isNotBlank()) &&
+        !previous.capabilities.supportsUnameSpoof
+    ) {
+        return@withContext SusfsPathApplyResult(error = "uname_unavailable")
+    }
+    if (config.avcLogSpoofing && !previous.capabilities.supportsAvcLogSpoofing) {
+        return@withContext SusfsPathApplyResult(error = "avc_spoofing_unavailable")
+    }
+    if (
+        (config.hideSusMntsForNonSuProcs || config.hideSusMntsForAllProcs) &&
+        !previous.capabilities.supportsHideSusMounts
+    ) {
+        return@withContext SusfsPathApplyResult(error = "hide_mounts_unavailable")
+    }
+    val normalized = config.copy(
+        paths = config.paths.mapNotNull(::normalizeSusfsPath).distinct(),
+        loopPaths = config.loopPaths.mapNotNull(::normalizeSusfsPath).distinct(),
+        susMaps = config.susMaps.mapNotNull(::normalizeSusfsMapPath).distinct(),
+        openRedirects = config.openRedirects.distinct(),
+        kstatEntries = config.kstatEntries.distinct(),
     )
+    val settingsText = buildString {
+        appendLine("enabled=${if (normalized.enabled) 1 else 0}")
+        appendLine("logging=${if (normalized.logging) 1 else 0}")
+        appendLine("avc_log_spoofing=${if (normalized.avcLogSpoofing) 1 else 0}")
+        appendLine("hide_sus_mnts_for_non_su_procs=${if (normalized.hideSusMntsForNonSuProcs) 1 else 0}")
+        appendLine("hide_sus_mnts_for_all_procs=${if (normalized.hideSusMntsForAllProcs) 1 else 0}")
+        appendLine("uname_release=${normalized.unameRelease.trim()}")
+        appendLine("uname_version=${normalized.unameVersion.trim()}")
+        appendLine("cmdline_or_bootconfig=${normalized.cmdlineOrBootconfig.trim()}")
+    }
+    val fileValues = linkedMapOf(
+        SUSFS_PATH_CONFIG_FILE to susfsLineListText(normalized.paths),
+        SUSFS_PATH_LOOP_CONFIG_FILE to susfsLineListText(normalized.loopPaths),
+        SUSFS_MAP_CONFIG_FILE to susfsLineListText(normalized.susMaps),
+        SUSFS_OPEN_REDIRECT_CONFIG_FILE to susfsLineListText(
+            normalized.openRedirects.map { "${it.originalPath}|${it.redirectedPath}|${it.uidScheme}" },
+        ),
+        SUSFS_KSTAT_CONFIG_FILE to susfsLineListText(normalized.kstatEntries.map { it.arguments.joinToString("|") }),
+        SUSFS_SETTINGS_CONFIG_FILE to settingsText,
+    )
+    if (fileValues.values.sumOf { it.toByteArray(Charsets.UTF_8).size } > SUSFS_CONFIG_MAX_BYTES) {
+        return@withContext SusfsPathApplyResult(error = "config_too_large")
+    }
+    val requiresReboot = !editableSusfsConfigEquals(previous, normalized)
     val serviceScript = susfsPathServiceScript()
     val serviceBase64 = Base64.encodeToString(serviceScript.toByteArray(Charsets.UTF_8), Base64.NO_WRAP)
     val stdout = ArrayList<String>()
     val stderr = ArrayList<String>()
-    val pendingConfig = "$SUSFS_PATH_CONFIG_FILE.pending"
     val pendingService = "$SUSFS_PATH_SERVICE_FILE.pending"
     val command = buildString {
         appendLine("set -e")
         appendLine("mkdir -p ${shellQuote(SUSFS_PATH_CONFIG_DIR)} /data/adb/service.d")
-        appendLine("trap 'rm -f $pendingConfig $pendingConfig.tmp $pendingService $pendingService.tmp' EXIT")
-        appendLine(atomicWriteCommand(pendingConfig, configText))
+        val pendingFiles = fileValues.keys.map { "$it.pending" }
+        appendLine("trap 'rm -f ${pendingFiles.joinToString(" ")} $pendingService $pendingService.tmp' EXIT")
+        fileValues.forEach { (path, value) ->
+            appendLine(atomicWriteCommand("$path.pending", value))
+        }
         appendLine(
             "printf '%s' ${shellQuote(serviceBase64)} | $BUSYBOX base64 -d > " +
                 shellQuote(pendingService)
         )
         appendLine("chmod 0700 ${shellQuote(pendingService)}")
         appendLine("chown 0:0 ${shellQuote(pendingService)}")
-        if (prepareExternalStorageRoots) {
-            appendLine("storage_attempt=0")
-            appendLine(
-                "while [ \"${'$'}storage_attempt\" -lt $SUSFS_EXTERNAL_STORAGE_WAIT_ATTEMPTS ] && " +
-                    "[ ! -d /sdcard/Android/data ]; do",
-            )
-            appendLine("  storage_attempt=${'$'}((storage_attempt + 1))")
-            appendLine("  sleep 1")
-            appendLine("done")
-            appendLine("[ -d /sdcard/Android/data ] || { printf '%s\\n' external_storage_unavailable >&2; exit 1; }")
-            appendLine("${shellQuote(previous.toolPath)} set_sdcard_root_path /sdcard")
-            appendLine("${shellQuote(previous.toolPath)} set_android_data_root_path /sdcard/Android/data")
+        fileValues.keys.forEach { path ->
+            appendLine("mv -f ${shellQuote("$path.pending")} ${shellQuote(path)}")
         }
-        additions.forEach { path ->
-            appendLine("${shellQuote(previous.toolPath)} add_sus_path ${shellQuote(path)}")
-        }
-        appendLine("mv -f ${shellQuote(pendingConfig)} ${shellQuote(SUSFS_PATH_CONFIG_FILE)}")
         appendLine("mv -f ${shellQuote(pendingService)} ${shellQuote(SUSFS_PATH_SERVICE_FILE)}")
+        appendLine("/system/bin/sh ${shellQuote(SUSFS_PATH_SERVICE_FILE)} >/dev/null 2>&1 || true")
     }
     val result = runCatching {
         withTimeoutOrNull(SUSFS_PATH_APPLY_TIMEOUT_MILLIS) {
@@ -2193,14 +2730,21 @@ suspend fun saveAndApplySusfsPathConfig(paths: List<String>): SusfsPathApplyResu
     }
     SusfsPathApplyResult(
         success = true,
-        appliedCount = normalized.size,
+        appliedCount = normalized.paths.size + normalized.loopPaths.size + normalized.susMaps.size +
+            normalized.openRedirects.size + normalized.kstatEntries.size,
         requiresReboot = requiresReboot,
     )
 }
 
 internal fun susfsPathServiceScript(): String = """#!/system/bin/sh
 CONFIG=$SUSFS_PATH_CONFIG_FILE
-SUSFS_PATH_FEATURE=$SUSFS_PATH_FEATURE
+LOOP_CONFIG=$SUSFS_PATH_LOOP_CONFIG_FILE
+MAP_CONFIG=$SUSFS_MAP_CONFIG_FILE
+REDIRECT_CONFIG=$SUSFS_OPEN_REDIRECT_CONFIG_FILE
+KSTAT_CONFIG=$SUSFS_KSTAT_CONFIG_FILE
+SETTINGS=$SUSFS_SETTINGS_CONFIG_FILE
+LOG_DIR=$SUSFS_PATH_CONFIG_DIR/logs
+LOG_FILE=${'$'}LOG_DIR/runtime.log
 TOOL=
 TOOL_VERSION=
 SUSFS_FEATURES=
@@ -2208,6 +2752,31 @@ FEATURE_PROBE_OK=0
 PROBED=0
 PROBE_SUPPORTED=0
 EXTERNAL_ROOTS_PREPARED=0
+
+mkdir -p "${'$'}LOG_DIR" 2>/dev/null || true
+if [ -f "${'$'}LOG_FILE" ] && [ ${'$'}(wc -c < "${'$'}LOG_FILE" 2>/dev/null) -gt 131072 ]; then
+    mv -f "${'$'}LOG_FILE" "${'$'}LOG_FILE.1" 2>/dev/null || true
+fi
+log() {
+    printf '%s %s\n' "${'$'}(date '+%Y-%m-%d %H:%M:%S' 2>/dev/null)" "${'$'}*" >> "${'$'}LOG_FILE" 2>/dev/null || true
+}
+read_setting() {
+    [ -f "${'$'}SETTINGS" ] || return 0
+    sed -n "s/^${'$'}1=//p" "${'$'}SETTINGS" 2>/dev/null | sed -n '1p'
+}
+feature_enabled() {
+    [ "${'$'}FEATURE_PROBE_OK" -eq 1 ] && printf '%s\n' "${'$'}SUSFS_FEATURES" | grep -qF "${'$'}1"
+}
+version_code() {
+    version_triplet=${'$'}(printf '%s\n' "${'$'}TOOL_VERSION" | sed -n 's/^[^0-9]*\([0-9][0-9]*\)\.\([0-9][0-9]*\)\.\([0-9][0-9]*\).*/\1 \2 \3/p')
+    [ -n "${'$'}version_triplet" ] || return 1
+    set -- ${'$'}version_triplet
+    printf '%s\n' ${'$'}(( ${'$'}1 * 10000 + ${'$'}2 * 100 + ${'$'}3 ))
+}
+supports_version() {
+    current=${'$'}(version_code 2>/dev/null) || return 1
+    [ "${'$'}current" -ge "${'$'}1" ]
+}
 find_tool() {
     for candidate in /data/adb/ksu/bin/ksu_susfs /data/adb/ap/bin/ksu_susfs /system/bin/ksu_susfs; do
         if [ -f "${'$'}candidate" ] && [ -x "${'$'}candidate" ]; then
@@ -2215,17 +2784,12 @@ find_tool() {
             break
         fi
     done
-    if [ -z "${'$'}TOOL" ]; then
-        TOOL=${'$'}(command -v ksu_susfs 2>/dev/null)
-    fi
+    [ -n "${'$'}TOOL" ] || TOOL=${'$'}(command -v ksu_susfs 2>/dev/null)
     [ -x "${'$'}TOOL" ]
 }
-
 probe_tool() {
-    if [ "${'$'}PROBED" -eq 1 ]; then
-        [ "${'$'}PROBE_SUPPORTED" -eq 1 ]
-        return
-    fi
+    PROBED=1
+    PROBE_SUPPORTED=0
     TOOL_VERSION=${'$'}("${'$'}TOOL" show version 2>/dev/null | sed -n '1p')
     if SUSFS_FEATURES=${'$'}("${'$'}TOOL" show enabled_features 2>/dev/null); then
         FEATURE_PROBE_OK=1
@@ -2233,72 +2797,145 @@ probe_tool() {
         FEATURE_PROBE_OK=0
         SUSFS_FEATURES=
     fi
-    PROBED=1
-    if [ "${'$'}FEATURE_PROBE_OK" -eq 1 ] && ! printf '%s\n' "${'$'}SUSFS_FEATURES" | grep -q "${'$'}SUSFS_PATH_FEATURE"; then
-        PROBE_SUPPORTED=0
+    if [ "${'$'}FEATURE_PROBE_OK" -eq 1 ] && ! feature_enabled "$SUSFS_PATH_FEATURE"; then
+        log "path feature is not reported"
         return 1
     fi
     PROBE_SUPPORTED=1
     return 0
 }
-
 needs_external_storage_roots() {
-    while IFS= read -r target_path; do
-        case "${'$'}target_path" in
-            /sdcard|/sdcard/*|/storage/emulated|/storage/emulated/*|/storage/self/primary|/storage/self/primary/*) return 0 ;;
-        esac
-    done < "${'$'}CONFIG"
+    for file in "${'$'}CONFIG" "${'$'}LOOP_CONFIG"; do
+        [ -f "${'$'}file" ] || continue
+        while IFS= read -r target_path; do
+            case "${'$'}target_path" in
+                /sdcard|/sdcard/*|/storage/emulated|/storage/emulated/*|/storage/self/primary|/storage/self/primary/*) return 0 ;;
+            esac
+        done < "${'$'}file"
+    done
     return 1
 }
-
-supports_external_storage_roots() {
-    version_triplet=${'$'}(printf '%s\n' "${'$'}TOOL_VERSION" | sed -n 's/^[^0-9]*\([0-9][0-9]*\)\.\([0-9][0-9]*\)\.\([0-9][0-9]*\).*/\1 \2 \3/p')
-    [ -n "${'$'}version_triplet" ] || return 1
-    set -- ${'$'}version_triplet
-    version_code=${'$'}(( ${'$'}1 * 10000 + ${'$'}2 * 100 + ${'$'}3 ))
-    [ "${'$'}version_code" -ge 10508 ] && [ "${'$'}version_code" -lt 20100 ]
-}
-
 prepare_external_storage_roots() {
     [ "${'$'}EXTERNAL_ROOTS_PREPARED" -eq 1 ] && return 0
     EXTERNAL_ROOTS_PREPARED=1
     needs_external_storage_roots || return 0
-    supports_external_storage_roots || return 0
-
+    version_code=${'$'}(version_code 2>/dev/null || echo 0)
+    [ "${'$'}version_code" -ge 10508 ] && [ "${'$'}version_code" -lt 20100 ] || return 0
     storage_attempt=0
     while [ "${'$'}storage_attempt" -lt 100 ] && [ ! -d /sdcard/Android/data ]; do
         storage_attempt=${'$'}((storage_attempt + 1))
         sleep 1
     done
-    "${'$'}TOOL" set_sdcard_root_path /sdcard >/dev/null 2>&1 || true
-    "${'$'}TOOL" set_android_data_root_path /sdcard/Android/data >/dev/null 2>&1 || true
+    "${'$'}TOOL" set_sdcard_root_path /sdcard >/dev/null 2>&1 || log "sdcard root unavailable"
+    "${'$'}TOOL" set_android_data_root_path /sdcard/Android/data >/dev/null 2>&1 || log "android data root unavailable"
 }
-
-apply_paths() {
+apply_path_file() {
+    file="${'$'}1"
+    command="${'$'}2"
+    [ -f "${'$'}file" ] || return 0
     failed=0
     while IFS= read -r target_path; do
         case "${'$'}target_path" in
-            /*) "${'$'}TOOL" add_sus_path "${'$'}target_path" >/dev/null 2>&1 || failed=1 ;;
+            ""|\#*) continue ;;
+            /*) "${'$'}TOOL" "${'$'}command" "${'$'}target_path" >/dev/null 2>&1 || { failed=1; log "${'$'}command failed: ${'$'}target_path"; } ;;
+            *) failed=1; log "invalid path entry" ;;
         esac
-    done < "${'$'}CONFIG"
-    [ "${'$'}failed" -eq 0 ]
+    done < "${'$'}file"
+    return "${'$'}failed"
+}
+apply_maps() {
+    [ -f "${'$'}MAP_CONFIG" ] || return 0
+    (feature_enabled "$SUSFS_MAP_FEATURE" || supports_version 10512) || return 0
+    while IFS= read -r target_path; do
+        case "${'$'}target_path" in
+            ""|\#*) continue ;;
+            /*) "${'$'}TOOL" add_sus_map "${'$'}target_path" >/dev/null 2>&1 || log "add_sus_map failed: ${'$'}target_path" ;;
+        esac
+    done < "${'$'}MAP_CONFIG"
+}
+apply_redirects() {
+    [ -f "${'$'}REDIRECT_CONFIG" ] || return 0
+    feature_enabled "$SUSFS_OPEN_REDIRECT_FEATURE" || return 0
+    while IFS='|' read -r original redirected uid_scheme; do
+        [ -n "${'$'}original" ] || continue
+        if [ -n "${'$'}uid_scheme" ]; then
+            "${'$'}TOOL" add_open_redirect "${'$'}original" "${'$'}redirected" "${'$'}uid_scheme" >/dev/null 2>&1 || log "open redirect failed: ${'$'}original"
+        else
+            "${'$'}TOOL" add_open_redirect "${'$'}original" "${'$'}redirected" >/dev/null 2>&1 || log "open redirect failed: ${'$'}original"
+        fi
+    done < "${'$'}REDIRECT_CONFIG"
+}
+apply_kstats() {
+    [ -f "${'$'}KSTAT_CONFIG" ] || return 0
+    (feature_enabled "$SUSFS_KSTAT_FEATURE" || supports_version 10508) || return 0
+    while IFS='|' read -r a1 a2 a3 a4 a5 a6 a7 a8 a9 a10 a11 a12 a13; do
+        [ -n "${'$'}a1" ] || continue
+        "${'$'}TOOL" add_sus_kstat_statically "${'$'}a1" "${'$'}a2" "${'$'}a3" "${'$'}a4" "${'$'}a5" "${'$'}a6" "${'$'}a7" "${'$'}a8" "${'$'}a9" "${'$'}a10" "${'$'}a11" "${'$'}a12" "${'$'}a13" >/dev/null 2>&1 || log "static kstat failed: ${'$'}a1"
+    done < "${'$'}KSTAT_CONFIG"
+}
+apply_settings() {
+    enabled=${'$'}(read_setting enabled)
+    [ -n "${'$'}enabled" ] || enabled=1
+    [ "${'$'}enabled" = "1" ] || return 0
+    logging=${'$'}(read_setting logging)
+    logging_value=0
+    [ "${'$'}logging" = "1" ] && logging_value=1
+    "${'$'}TOOL" enable_log "${'$'}logging_value" >/dev/null 2>&1 || true
+    version_value=${'$'}(version_code 2>/dev/null || echo 0)
+    if [ "${'$'}version_value" -ge 10509 ] || feature_enabled "$SUSFS_AVC_FEATURE"; then
+        avc=${'$'}(read_setting avc_log_spoofing)
+        avc_value=0
+        [ "${'$'}avc" = "1" ] && avc_value=1
+        "${'$'}TOOL" enable_avc_log_spoofing "${'$'}avc_value" >/dev/null 2>&1 || true
+    fi
+    release=${'$'}(read_setting uname_release)
+    build=${'$'}(read_setting uname_version)
+    if [ -n "${'$'}release" ] || [ -n "${'$'}build" ]; then
+        (feature_enabled "CONFIG_KSU_SUSFS_SPOOF_UNAME" || supports_version 10500) && "${'$'}TOOL" set_uname "${'$'}{release:-default}" "${'$'}{build:-default}" >/dev/null 2>&1 || true
+    fi
+    cmdline=${'$'}(read_setting cmdline_or_bootconfig)
+    if [ -n "${'$'}cmdline" ] && [ -f "${'$'}cmdline" ]; then
+        if feature_enabled "$SUSFS_CMDLINE_FEATURE" || supports_version 10504; then
+            "${'$'}TOOL" set_cmdline_or_bootconfig "${'$'}cmdline" >/dev/null 2>&1 || true
+        fi
+    fi
+    hide_non=${'$'}(read_setting hide_sus_mnts_for_non_su_procs)
+    hide_all=${'$'}(read_setting hide_sus_mnts_for_all_procs)
+    if feature_enabled "CONFIG_KSU_SUSFS_HIDE_SUS_MNTS_FOR_ALL_PROCS" || supports_version 10507; then
+        if [ "${'$'}hide_all" = "1" ]; then
+            "${'$'}TOOL" hide_sus_mnts_for_all_procs 1 >/dev/null 2>&1 || true
+        elif [ "${'$'}hide_non" = "1" ]; then
+            "${'$'}TOOL" hide_sus_mnts_for_non_su_procs 1 >/dev/null 2>&1 || true
+        fi
+    fi
 }
 
 attempt=0
 while [ "${'$'}attempt" -lt 30 ]; do
-    [ -f "${'$'}CONFIG" ] || exit 0
-    if [ -z "${'$'}TOOL" ]; then
-        find_tool || true
-    fi
+    [ -f "${'$'}SETTINGS" ] || [ -f "${'$'}CONFIG" ] || [ -f "${'$'}LOOP_CONFIG" ] || exit 0
+    enabled=${'$'}(read_setting enabled)
+    [ -z "${'$'}enabled" ] && enabled=1
+    [ "${'$'}enabled" = "1" ] || exit 0
+    if [ -z "${'$'}TOOL" ]; then find_tool || true; fi
     if [ -n "${'$'}TOOL" ] && probe_tool; then
         prepare_external_storage_roots
-        if apply_paths; then
-            exit 0
+        failed=0
+        apply_path_file "${'$'}CONFIG" add_sus_path || failed=1
+        if feature_enabled "$SUSFS_PATH_LOOP_FEATURE" || supports_version 10509; then
+            apply_path_file "${'$'}LOOP_CONFIG" add_sus_path_loop || failed=1
         fi
+        apply_maps
+        apply_kstats
+        apply_redirects
+        apply_settings
+        if [ "${'$'}failed" -eq 0 ]; then log "SUSFS configuration applied"; exit 0; fi
+    else
+        log "SUSFS runtime unavailable"
     fi
     attempt=${'$'}((attempt + 1))
     sleep 1
 done
+log "SUSFS configuration timed out after 30 attempts"
 exit 0
 """
 

@@ -31,6 +31,64 @@ config KSU_NATIVE_KPM
 	help
 	  Deprecated compatibility symbol. Use CONFIG_KPM instead.
 
+menu "KernelSU - SUSFS"
+	depends on KSU = y && ARM64 && THREAD_INFO_IN_TASK
+
+config KSU_SUSFS
+	bool "Enable SUSFS for built-in GKI"
+	default n
+	help
+	  Build the SUSFS kernel implementation and the ApkeSU source-hook
+	  bridge into a GKI kernel. This option is intentionally unavailable
+	  for LKM builds because SUSFS also patches the Android kernel VFS.
+
+config KSU_SUSFS_SUS_PATH
+	bool "Hide suspicious paths"
+	depends on KSU_SUSFS
+	default y
+
+config KSU_SUSFS_SUS_MOUNT
+	bool "Hide suspicious mounts"
+	depends on KSU_SUSFS
+	default y
+
+config KSU_SUSFS_SUS_KSTAT
+	bool "Spoof suspicious file metadata"
+	depends on KSU_SUSFS
+	default y
+
+config KSU_SUSFS_SPOOF_UNAME
+	bool "Spoof uname"
+	depends on KSU_SUSFS
+	default y
+
+config KSU_SUSFS_ENABLE_LOG
+	bool "Enable SUSFS kernel logging"
+	depends on KSU_SUSFS
+	default y
+
+config KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS
+	bool "Hide KernelSU and SUSFS symbols from kallsyms"
+	depends on KSU_SUSFS
+	default y
+
+config KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG
+	bool "Spoof cmdline or bootconfig"
+	depends on KSU_SUSFS
+	default y
+
+config KSU_SUSFS_OPEN_REDIRECT
+	bool "Redirect opened paths"
+	depends on KSU_SUSFS
+	default y
+
+config KSU_SUSFS_SUS_MAP
+	bool "Hide suspicious mapped files"
+	depends on KSU_SUSFS
+	default y
+
+endmenu
+
 config ABK_CONTROL
 	tristate "Enable ABK control interface and manager compatibility"
 	depends on KSU

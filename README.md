@@ -75,7 +75,8 @@ Native GKI KPM 接口的来源、兼容范围、SukiSU-Ultra 参考提交、Kern
 ## 致谢
 
 - [KernelSU](https://github.com/tiann/KernelSU)，感谢作者weishu与全部贡献者
-- [Sukisu-Ultra](https://github.com/SukiSU-Ultra/SukiSU-Ultra) SuSFS方案参考
+- [SukiSU-Ultra](https://github.com/SukiSU-Ultra/SukiSU-Ultra) SuSFS 集成方案参考
+- [simonpunk/susfs4ksu](https://gitlab.com/simonpunk/susfs4ksu) GKI SUSFS 源码补丁来源（固定版本见 [THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md)）
 - [ReSukiSU](https://github.com/ReSukiSU/ReSukiSU) 动态管理器功能设计、IOCTL 编号与加载思路参考
 - [FolkPatch](https://github.com/LyraVoid/FolkPatch) UI框架代码引用
 - [skrootpro](https://github.com/abcz316/SKRoot-linuxKernelRoot)UI框架借鉴

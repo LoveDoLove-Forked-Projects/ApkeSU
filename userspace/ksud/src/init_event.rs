@@ -192,6 +192,10 @@ pub fn run_stage(stage: &str, block: bool) {
     // service milestones; apply_if_configured is idempotent once it is loaded.
     if matches!(stage, "service" | "boot-completed") {
         crate::pathmask::apply_if_configured();
+        // Retry features whose early hook installation did not become active.
+        if let Err(e) = crate::feature::reapply_configured_features() {
+            warn!("re-apply feature config failed: {e}");
+        }
     }
 
     if let Err(e) = crate::module::exec_common_scripts(&format!("{stage}.d"), block) {

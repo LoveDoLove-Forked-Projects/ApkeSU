@@ -2,10 +2,18 @@ kernelsu-objs := core/init.o
 
 kernelsu-objs += feature/kernel_umount.o
 kernelsu-objs += feature/sulog.o
+ifeq ($(CONFIG_KSU_SUSFS),y)
+kernelsu-objs += feature/sucompat_susfs.o
+else
 kernelsu-objs += feature/sucompat.o
 kernelsu-objs += feature/hook_status.o
+endif
 
 kernelsu-objs += hook/lsm_hook.o
+ifeq ($(CONFIG_KSU_SUSFS),y)
+kernelsu-objs += hook/setuid_hook_susfs.o
+kernelsu-objs += hook/arm64/patch_memory.o
+else
 kernelsu-objs += hook/setuid_hook.o
 kernelsu-objs += hook/syscall_event_bridge.o
 kernelsu-objs += hook/syscall_hook_manager.o
@@ -16,6 +24,7 @@ kernelsu-objs += hook/arm64/syscall_hook.o
 else ifeq ($(CONFIG_X86_64),y)
 kernelsu-objs += hook/x86_64/patch_memory.o
 kernelsu-objs += hook/x86_64/syscall_hook.o
+endif
 endif
 
 kernelsu-objs += infra/file_wrapper.o
@@ -37,23 +46,39 @@ kernelsu-objs += policy/app_profile.o
 kernelsu-objs += policy/feature.o
 
 kernelsu-objs += runtime/boot_event.o
+ifeq ($(CONFIG_KSU_SUSFS),y)
+kernelsu-objs += runtime/ksud_integration_susfs.o
+else
 kernelsu-objs += runtime/ksud_integration.o
+endif
 
 kernelsu-objs += selinux/selinux.o
 kernelsu-objs += selinux/rules.o
 kernelsu-objs += selinux/sepolicy.o
 
+ifeq ($(CONFIG_KSU_SUSFS),y)
+kernelsu-objs += sulog/event_susfs.o
+else
 kernelsu-objs += sulog/event.o
+endif
 kernelsu-objs += sulog/fd.o
 
 kernelsu-objs += supercall/dispatch.o
 kernelsu-objs += supercall/perm.o
 kernelsu-objs += supercall/supercall.o
 
+ifeq ($(CONFIG_KSU_SUSFS),y)
+kernelsu-objs += feature/adb_root_susfs.o
+else
 kernelsu-objs += feature/adb_root.o
+endif
 
+ifeq ($(CONFIG_KSU_SUSFS),y)
+kernelsu-objs += feature/selinux_hide_susfs.o
+else
 kernelsu-objs += feature/selinux_hide.o
 kernelsu-objs += feature/avc_spoof.o
+endif
 
 ifeq ($(CONFIG_ABK_CONTROL),)
 ifneq ($(filter y m,$(CONFIG_KSU)),)
@@ -105,15 +130,26 @@ KSU_KERNEL_DIR := $(srcroot)
 endif
 endif
 ifndef KSU_KERNEL_DIR
+KSU_SRC_REAL := $(realpath $(src))
+ifneq ($(KSU_SRC_REAL),)
+KSU_KERNEL_DIR := $(KSU_SRC_REAL)
+else
 ifeq ($(filter /%,$(src)),)
 KSU_KERNEL_DIR := $(srctree)/$(src)
 else
 KSU_KERNEL_DIR := $(src)
 endif
 endif
+endif
+KSU_KERNEL_DIR := $(abspath $(KSU_KERNEL_DIR))
+KSU_KERNEL_DIR_REAL := $(realpath $(KSU_KERNEL_DIR))
+ifneq ($(KSU_KERNEL_DIR_REAL),)
+KSU_KERNEL_DIR := $(KSU_KERNEL_DIR_REAL)
+endif
 KSU_ROOT_DIR := $(abspath $(KSU_KERNEL_DIR)/..)
 
 ccflags-y += -I$(KSU_KERNEL_DIR) -I$(KSU_KERNEL_DIR)/include -I$(KSU_ROOT_DIR)
+ccflags-y += -I$(objtree)/security/selinux/include
 
 obj-$(CONFIG_KSU) += kernelsu.o
 

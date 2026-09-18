@@ -26,6 +26,7 @@ import androidx.compose.material.icons.rounded.InstallMobile
 import androidx.compose.material.icons.rounded.Info
 import androidx.compose.material.icons.rounded.Security
 import androidx.compose.material.icons.rounded.WarningAmber
+import androidx.compose.material.icons.rounded.VisibilityOff
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -57,6 +58,9 @@ fun HomePagerDelta(
         title = state.customHomeTitle.ifBlank { stringResource(R.string.home) },
         icon = Icons.Rounded.Home,
         bottomInnerPadding = bottomInnerPadding,
+        topActionIcon = Icons.Rounded.VisibilityOff.takeIf { state.showSusfsPathConfig },
+        onTopActionClick = actions.onSusfsPathClick,
+        topActionContentDescription = stringResource(R.string.home_susfs_path),
     ) { contentPadding ->
         LazyColumn(
             contentPadding = PaddingValues(
@@ -262,6 +266,19 @@ private fun DeltaManagerCard(state: HomeUiState) {
                 label = stringResource(R.string.home_kernel),
                 value = state.systemInfo.kernelVersion,
             )
+            // KPM / SUSFS 有才显示：没有的内核不占一行
+            if (state.systemInfo.kpm.isNotBlank()) {
+                DeltaInfoLine(
+                    label = stringResource(R.string.home_kpm),
+                    value = state.systemInfo.kpm,
+                )
+            }
+            if (state.systemInfo.susfs.isNotBlank()) {
+                DeltaInfoLine(
+                    label = stringResource(R.string.home_susfs),
+                    value = state.systemInfo.susfs,
+                )
+            }
             DeltaInfoLine(
                 label = stringResource(R.string.home_kernel_hook),
                 value = kernelHookTypeLabel(state.kernelHookTypes),

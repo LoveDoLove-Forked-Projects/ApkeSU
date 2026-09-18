@@ -1,0 +1,11 @@
+{
+  "susfs": {
+    "gki-android12-5.10": "e466df60670eab2847ea76940be2f8a125c8adc9",
+    "gki-android13-5.10": "805e7e853bf49df671c9efed772a5e744ae6fa9e",
+    "gki-android13-5.15": "01b08bf995c22c25f6361539d6b89435504528d9",
+    "gki-android14-5.15": "a96b41434e401565158b8eb19a4fe8855143ce99",
+    "gki-android14-6.1": "596ec8fcdcb5a6ee366494304333c7fdc76d8862",
+    "gki-android15-6.6": "72997d308cf0d55003ad4695ebde130ef9fc5201",
+    "gki-android16-6.12": "55e16cb62127057f36a16e6a3068217ba5dade31"
+  }
+}

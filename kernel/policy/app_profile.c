@@ -17,7 +17,9 @@
 #include "klog.h" // IWYU pragma: keep
 #include "selinux/selinux.h"
 #include "infra/su_mount_ns.h"
+#ifndef CONFIG_KSU_SUSFS
 #include "hook/tp_marker.h"
+#endif
 
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 7, 0)
 static struct group_info root_groups = { .usage = REFCOUNT_INIT(2) };
@@ -77,7 +79,7 @@ void seccomp_filter_release(struct task_struct *tsk);
 static bool has_call_to_spin_lock = false;
 #endif
 
-static void disable_seccomp(void)
+void disable_seccomp(void)
 {
     struct task_struct *fake;
 
@@ -126,8 +128,10 @@ int escape_with_root_profile(void)
 {
     int ret = 0;
     struct cred *cred;
+#ifndef CONFIG_KSU_SUSFS
     struct task_struct *p = current;
     struct task_struct *t;
+#endif
     struct root_profile *profile = NULL;
     struct user_struct *new_user;
 
@@ -207,9 +211,11 @@ int escape_with_root_profile(void)
         set_thread_flag(TIF_KSU_DISABLE_ESCAPE_WITH_ROOT);
     }
 
+#ifndef CONFIG_KSU_SUSFS
     for_each_thread (p, t) {
         ksu_set_task_tracepoint_flag(t);
     }
+#endif
 
     setup_mount_ns(profile->namespaces);
     ksu_put_root_profile(profile);
@@ -222,16 +228,17 @@ out_abort_creds:
     return ret;
 }
 
-void escape_to_root_for_init(void)
+int escape_to_root_for_init(void)
 {
     struct cred *cred = prepare_creds();
     if (!cred) {
         pr_err("Failed to prepare init's creds!\n");
-        return;
+        return -ENOMEM;
     }
 
     setup_selinux(KERNEL_SU_CONTEXT, cred);
     commit_creds(cred);
+    return 0;
 }
 
 void __init ksu_app_profile_init(void)

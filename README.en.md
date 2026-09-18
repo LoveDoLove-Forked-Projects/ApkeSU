@@ -77,7 +77,8 @@ This tool is intended only for local technical research on Android devices, lear
 ## Acknowledgements
 
 - [KernelSU](https://github.com/tiann/KernelSU), with thanks to author weishu and all contributors
-- [SukiSU-Ultra](https://github.com/SukiSU-Ultra/SukiSU-Ultra), reference for the SuSFS solution
+- [SukiSU-Ultra](https://github.com/SukiSU-Ultra/SukiSU-Ultra), reference for the SuSFS integration design
+- [simonpunk/susfs4ksu](https://gitlab.com/simonpunk/susfs4ksu), source of the pinned GKI SUSFS patches (see [THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md))
 - [ReSukiSU](https://github.com/ReSukiSU/ReSukiSU), reference for the Dynamic Manager design, IOCTL command allocation, and loading approach
 - [FolkPatch](https://github.com/LyraVoid/FolkPatch), referenced UI framework code
 - [kowsu](https://github.com/KOWX712/KernelSU.git), technical support

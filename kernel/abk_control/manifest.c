@@ -24,6 +24,12 @@
 #define ABK_USE_KPM false
 #endif
 
+#ifdef CONFIG_KSU_SUSFS
+#define ABK_ENABLE_SUSFS true
+#else
+#define ABK_ENABLE_SUSFS false
+#endif
+
 const struct abk_control_manifest_entry abk_control_manifest[] = {
     {
         .id = "abk_control",
@@ -76,7 +82,7 @@ const struct abk_control_build_info abk_control_build = {
         .use_networking = false,
         .use_kpm = ABK_USE_KPM,
         .use_rekernel = false,
-        .enable_susfs = false,
+        .enable_susfs = ABK_ENABLE_SUSFS,
         .supp_op = false,
         .zram_full_algo = false,
     },

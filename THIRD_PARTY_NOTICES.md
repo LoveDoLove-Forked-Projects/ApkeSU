@@ -208,3 +208,38 @@ logging, and Manager integration are ApkeSU-specific. LKM and late-load builds
 do not use this backend; they use the separate KPatch-Next path. This notice
 does not relicense any upstream source: SPDX headers, upstream license texts,
 and the source-availability requirements remain binding.
+
+7. SUSFS GKI source patches
+---------------------------
+
+The built-in GKI SUSFS build downloads source patches from
+[simonpunk/susfs4ksu](https://gitlab.com/simonpunk/susfs4ksu). The build
+copies `kernel_patches/fs/*` and `kernel_patches/include/linux/*` into the
+downloaded Android common kernel tree and applies the matching
+`50_add_susfs_in_gki-*.patch`. These files are build-time source inputs; they
+are not stored as generated kernel artifacts in this repository.
+
+Reproducible builds use the branch-specific commits recorded in
+`.github/config/gki-commits.json`:
+
+| SUSFS branch | Pinned commit |
+| --- | --- |
+| `gki-android12-5.10` | `e466df60670eab2847ea76940be2f8a125c8adc9` |
+| `gki-android13-5.10` | `805e7e853bf49df671c9efed772a5e744ae6fa9e` |
+| `gki-android13-5.15` | `01b08bf995c22c25f6361539d6b89435504528d9` |
+| `gki-android14-5.15` | `a96b41434e401565158b8eb19a4fe8855143ce99` |
+| `gki-android14-6.1` | `596ec8fcdcb5a6ee366494304333c7fdc76d8862` |
+| `gki-android15-6.6` | `72997d308cf0d55003ad4695ebde130ef9fc5201` |
+| `gki-android16-6.12` | `55e16cb62127057f36a16e6a3068217ba5dade31` |
+
+The upstream repository carries the GNU GPL version 3 license text. Preserve
+its copyright and license notices and provide the complete corresponding
+source for distributed builds. Individual imported files do not currently
+carry SPDX identifiers, so this notice records the source repository and exact
+revisions without claiming that those files have been relicensed under
+ApkeSU's project-wide license split.
+
+SUSFS source patches are enabled only for built-in AArch64 GKI builds with
+`CONFIG_KSU_SUSFS=y`. LKM builds continue to use ApkeSU's existing dynamic-hook
+implementation. Android 17 / Linux 6.18 is intentionally excluded because the
+upstream repository does not publish a matching GKI source patch.

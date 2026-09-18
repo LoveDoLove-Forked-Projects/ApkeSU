@@ -19,8 +19,9 @@ class WebManagerService : Service() {
         super.onCreate()
         runCatching {
             createNotificationChannel()
-            startForegroundCompat()
+            // 先启动服务拿到实际端口，通知里才能显示正确的访问地址
             WebManagerServer.start()
+            startForegroundCompat()
         }.onFailure {
             Log.e(TAG, "failed to start web manager service", it)
             stopSelf()
@@ -59,7 +60,7 @@ class WebManagerService : Service() {
         val notification: Notification = NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(android.R.drawable.stat_sys_upload)
             .setContentTitle(getString(R.string.web_manager_notification_title))
-            .setContentText(getString(R.string.web_manager_notification_text))
+            .setContentText(getString(R.string.web_manager_notification_text, WebManagerServer.port()))
             .setOngoing(true)
             .setCategory(NotificationCompat.CATEGORY_SERVICE)
             .build()

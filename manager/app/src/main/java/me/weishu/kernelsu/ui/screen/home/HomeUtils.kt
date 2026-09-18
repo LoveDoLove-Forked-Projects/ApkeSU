@@ -22,7 +22,11 @@ data class SystemInfo(
     val deviceModel: String,
     val fingerprint: String,
     val selinuxStatus: String,
-    val seccompStatus: Int
+    val seccompStatus: Int,
+    /** KPM 支持摘要；空串表示内核没有 KPM，设备信息卡片隐藏该行。 */
+    val kpm: String = "",
+    /** SUSFS 摘要；空串表示没有 SUSFS，设备信息卡片隐藏该行。 */
+    val susfs: String = "",
 )
 
 fun getManagerVersion(context: Context): ManagerVersion {

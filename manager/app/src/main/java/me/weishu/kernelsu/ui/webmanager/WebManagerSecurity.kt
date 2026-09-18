@@ -9,8 +9,22 @@ internal object WebManagerSecurity {
 
     private const val MAX_MODULE_ID_LENGTH = 128
     private val moduleIdPattern = Regex("[A-Za-z0-9._-]{1,$MAX_MODULE_ID_LENGTH}")
+    private const val MAX_UPLOAD_NAME_LENGTH = 96
+    private val uploadNamePattern = Regex("[A-Za-z0-9._-]{1,$MAX_UPLOAD_NAME_LENGTH}")
 
-    fun isValidModuleId(value: String): Boolean = moduleIdPattern.matches(value)
+    fun isValidModuleId(value: String): Boolean =
+        moduleIdPattern.matches(value) && value != "." && value != ".."
+
+    /**
+     * 导入文件的落盘名：剥掉任何目录部分，只允许 `[A-Za-z0-9._-]`，且不以点开头。
+     * 不合法就返回 null，由调用方生成兜底文件名，绝不把用户输入当路径用。
+     */
+    fun sanitizeUploadName(raw: String?): String? {
+        val value = raw?.trim()?.substringAfterLast('/')?.substringAfterLast('\\')?.trim().orEmpty()
+        if (value.isEmpty() || value.startsWith('.')) return null
+        val collapsed = value.replace(' ', '_')
+        return collapsed.takeIf(uploadNamePattern::matches)
+    }
 
     /** Decode one URL path segment and reject separators or traversal payloads. */
     fun decodeModuleId(value: String): String? = runCatching {

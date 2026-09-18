@@ -111,6 +111,9 @@ data class HomeUiState(
     val isFullFeatured: Boolean
         get() = rootRuntimeState == RootRuntimeState.Running
 
+    val showSusfsPathConfig: Boolean
+        get() = isKernelActive && lkmMode == false && !isLateLoadMode
+
     val showGkiWarning: Boolean
         get() = showGkiWarningSetting && isKernelActive && lkmMode == false
 
@@ -165,4 +168,5 @@ data class HomeActions(
     val onJailbreakClick: () -> Unit = {},
     val onStyleSettingsClick: () -> Unit = {},
     val onDiagnoseClick: () -> Unit = {},
+    val onSusfsPathClick: () -> Unit = {},
 )

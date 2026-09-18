@@ -132,6 +132,7 @@ fun HomePager(
         onOpenUrl = uriHandler::openUri,
         onStyleSettingsClick = { navigator.push(Route.PreInstallStyleSettings) },
         onDiagnoseClick = viewModel::runRootDiagnostics,
+        onSusfsPathClick = { navigator.push(Route.SusfsPathConfig) },
         onJailbreakClick = {
             if (jailbreakInProgress) return@HomeActions
             if (uiState.isLateLoadMode) {

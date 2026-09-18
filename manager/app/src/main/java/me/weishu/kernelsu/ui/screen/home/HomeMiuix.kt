@@ -59,6 +59,7 @@ import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material.icons.rounded.CheckCircleOutline
 import androidx.compose.material.icons.rounded.ErrorOutline
 import androidx.compose.material.icons.rounded.WarningAmber
+import androidx.compose.material.icons.rounded.VisibilityOff
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
@@ -210,6 +211,8 @@ fun HomePagerMiuix(
                 barColor = topBarColors.container,
                 contentColor = topBarColors.content,
                 onDiagnoseClick = actions.onDiagnoseClick,
+                showSusfs = state.showSusfsPathConfig,
+                onSusfsClick = actions.onSusfsPathClick,
                 controlsEnabled = homeLayoutEditor == null,
             )
         },
@@ -471,6 +474,8 @@ private fun TopBar(
     barColor: Color,
     contentColor: Color,
     onDiagnoseClick: () -> Unit,
+    showSusfs: Boolean,
+    onSusfsClick: () -> Unit,
     controlsEnabled: Boolean = true,
 ) {
     BlurredBar(backdrop) {
@@ -501,6 +506,18 @@ private fun TopBar(
                     contentDescription = stringResource(R.string.root_diagnose),
                     tint = contentColor,
                 )
+            }
+            if (showSusfs) {
+                IconButton(
+                    enabled = controlsEnabled,
+                    onClick = onSusfsClick,
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.VisibilityOff,
+                        contentDescription = stringResource(R.string.home_susfs_path),
+                        tint = contentColor,
+                    )
+                }
             }
             Box(modifier = Modifier.size(48.dp), contentAlignment = Alignment.Center) {
                 RebootListPopupMiuix(
@@ -2295,6 +2312,26 @@ private fun SystemInfoPanelMiuix(
                 labelColor = labelColor,
                 valueColor = rowColor,
             )
+            // KPM / SUSFS 有才显示：没有的内核不占一行
+            if (systemInfo.kpm.isNotBlank()) {
+                InfoRowMiuix(
+                    label = stringResource(R.string.home_kpm),
+                    value = systemInfo.kpm,
+                    onCopy = { onCopyValue("kpm", systemInfo.kpm) },
+                    labelColor = labelColor,
+                    valueColor = rowColor,
+                )
+            }
+            if (systemInfo.susfs.isNotBlank()) {
+                InfoRowMiuix(
+                    label = stringResource(R.string.home_susfs),
+                    value = systemInfo.susfs,
+                    maxLines = 2,
+                    onCopy = { onCopyValue("susfs", systemInfo.susfs) },
+                    labelColor = labelColor,
+                    valueColor = rowColor,
+                )
+            }
             InfoRowMiuix(
                 label = stringResource(R.string.home_kernel_hook),
                 value = hookTypeDisplay,

@@ -69,6 +69,8 @@ void on_boot_completed(void)
     ksu_boot_completed = true;
     pr_info("on_boot_completed!\n");
     track_throne(TRACK_THRONE_PRUNE_ONLY);
+#ifndef CONFIG_KSU_SUSFS
     ksu_avc_spoof_handle_boot_completed();
+#endif
     ksu_selinux_hide_drop_backup_if_unused();
 }

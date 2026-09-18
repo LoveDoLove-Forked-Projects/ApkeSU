@@ -49,6 +49,8 @@ class WebManagerSecurityTest {
     fun moduleIdValidationRejectsEncodedSeparatorsAndTraversal() {
         assertTrue(WebManagerSecurity.isValidModuleId("example.module-1"))
         assertFalse(WebManagerSecurity.isValidModuleId(""))
+        assertFalse(WebManagerSecurity.isValidModuleId(".."))
+        assertFalse(WebManagerSecurity.isValidModuleId("."))
         assertFalse(WebManagerSecurity.isValidModuleId("../escape"))
         assertFalse(WebManagerSecurity.isValidModuleId("module/name"))
         assertFalse(WebManagerSecurity.isValidModuleId("a".repeat(129)))
@@ -58,5 +60,31 @@ class WebManagerSecurityTest {
         assertNull(WebManagerSecurity.decodeModuleId("module%2Fname"))
         assertNull(WebManagerSecurity.decodeModuleId("module%252Fname"))
         assertNull(WebManagerSecurity.decodeModuleId("..%2Fescape"))
+        assertNull(WebManagerSecurity.decodeModuleId(".."))
+    }
+
+    @Test
+    fun uploadNameKeepsPlainKpmFileNames() {
+        assertTrue(WebManagerSecurity.sanitizeUploadName("demo.kpm") == "demo.kpm")
+        assertTrue(WebManagerSecurity.sanitizeUploadName("  My-Hook_v1.2.kpm  ") == "My-Hook_v1.2.kpm")
+        assertTrue(WebManagerSecurity.sanitizeUploadName("with space.kpm") == "with_space.kpm")
+        assertTrue(
+            WebManagerSecurity.sanitizeUploadName("C:\\Users\\fixz\\Downloads\\demo.kpm") == "demo.kpm",
+        )
+        assertTrue(WebManagerSecurity.sanitizeUploadName("/sdcard/Download/demo.kpm") == "demo.kpm")
+    }
+
+    @Test
+    fun uploadNameRejectsPathsAndTraversal() {
+        assertNull(WebManagerSecurity.sanitizeUploadName(null))
+        assertNull(WebManagerSecurity.sanitizeUploadName(""))
+        assertNull(WebManagerSecurity.sanitizeUploadName("   "))
+        assertNull(WebManagerSecurity.sanitizeUploadName(".."))
+        assertNull(WebManagerSecurity.sanitizeUploadName("foo/.."))
+        assertNull(WebManagerSecurity.sanitizeUploadName(".hidden.kpm"))
+        assertNull(WebManagerSecurity.sanitizeUploadName("bad;name.kpm"))
+        assertNull(WebManagerSecurity.sanitizeUploadName("a".repeat(97)))
+        // 目录部分被剥掉，落盘只会用最后一段，不存在路径穿越
+        assertTrue(WebManagerSecurity.sanitizeUploadName("../../etc/passwd") == "passwd")
     }
 }

@@ -46,6 +46,8 @@ import me.weishu.kernelsu.ui.util.getSELinuxStatusRaw
 import me.weishu.kernelsu.ui.util.getSuperuserCount
 import me.weishu.kernelsu.ui.util.isHiddenPathLkmMode
 import me.weishu.kernelsu.ui.util.ksuRootAvailable
+import me.weishu.kernelsu.ui.util.probeKpmSummary
+import me.weishu.kernelsu.ui.util.probeSusfsSummary
 import me.weishu.kernelsu.ui.util.resolveDeviceName
 import me.weishu.kernelsu.ui.util.rootAvailable
 import java.util.concurrent.atomic.AtomicLong
@@ -105,8 +107,22 @@ class HomeViewModel(
                 runCatching { Natives.refreshInfo() }
                 buildStateSafely()
             }
-            if (generation == refreshGeneration.get()) {
-                _uiState.update { baseState }
+            if (generation != refreshGeneration.get()) return@launch
+            _uiState.update { baseState }
+            // KPM / SUSFS 需要 root 探测，放在状态之后异步补齐，避免拖慢主页首屏
+            val systemInfo = withContext(Dispatchers.IO) {
+                baseState.systemInfo.copy(
+                    kpm = runCatching { probeKpmSummary() }.getOrDefault(""),
+                    susfs = runCatching { probeSusfsSummary() }.getOrDefault(""),
+                )
+            }
+            if (generation != refreshGeneration.get()) return@launch
+            _uiState.update { current ->
+                if (current.systemInfo == baseState.systemInfo) {
+                    current.copy(systemInfo = systemInfo)
+                } else {
+                    current
+                }
             }
         }
     }

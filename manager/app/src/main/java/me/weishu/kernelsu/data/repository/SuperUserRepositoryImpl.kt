@@ -15,6 +15,7 @@ import android.util.Log
 import com.topjohnwu.superuser.Shell
 import com.topjohnwu.superuser.ipc.RootService
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
@@ -116,7 +117,10 @@ class SuperUserRepositoryImpl : SuperUserRepository {
             Log.i(TAG, "load root service cost: ${SystemClock.elapsedRealtime() - start}, packages: ${newApps.size}")
             return newApps to idsArray.toList()
         } finally {
-            withContext(Dispatchers.Main) {
+            // The root query timeout cancels this coroutine; a plain withContext
+            // would be skipped and the bound root service would leak, making
+            // every later query slower. Unbind outside of cancellation scope.
+            withContext(Dispatchers.Main + NonCancellable) {
                 RootService.unbind(currentConnection)
             }
         }

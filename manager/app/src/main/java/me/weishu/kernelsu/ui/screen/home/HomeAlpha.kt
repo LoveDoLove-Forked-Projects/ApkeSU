@@ -23,6 +23,7 @@ import androidx.compose.material.icons.rounded.FavoriteBorder
 import androidx.compose.material.icons.rounded.InstallMobile
 import androidx.compose.material.icons.rounded.Info
 import androidx.compose.material.icons.rounded.WarningAmber
+import androidx.compose.material.icons.rounded.VisibilityOff
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -53,6 +54,9 @@ fun HomePagerAlpha(
     AlphaScreen(
         title = state.customHomeTitle.ifBlank { stringResource(R.string.home) },
         bottomInnerPadding = bottomInnerPadding,
+        topActionIcon = Icons.Rounded.VisibilityOff.takeIf { state.showSusfsPathConfig },
+        onTopActionClick = actions.onSusfsPathClick,
+        topActionContentDescription = stringResource(R.string.home_susfs_path),
     ) { contentPadding ->
         LazyColumn(
             contentPadding = PaddingValues(
@@ -194,6 +198,21 @@ private fun AlphaManagerCard(state: HomeUiState) {
                     value = state.systemInfo.kernelVersion,
                     strong = false,
                 )
+                // KPM / SUSFS 有才显示：没有的内核不占一行
+                if (state.systemInfo.kpm.isNotBlank()) {
+                    AlphaInfoLine(
+                        label = stringResource(R.string.home_kpm),
+                        value = state.systemInfo.kpm,
+                        strong = false,
+                    )
+                }
+                if (state.systemInfo.susfs.isNotBlank()) {
+                    AlphaInfoLine(
+                        label = stringResource(R.string.home_susfs),
+                        value = state.systemInfo.susfs,
+                        strong = false,
+                    )
+                }
                 AlphaInfoLine(
                     label = stringResource(R.string.home_device_model),
                     value = state.systemInfo.deviceModel,

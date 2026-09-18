@@ -25,9 +25,11 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Block
 import androidx.compose.material.icons.outlined.CheckCircle
 import androidx.compose.material.icons.outlined.Warning
+import androidx.compose.material.icons.rounded.VisibilityOff
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.LargeFlexibleTopAppBar
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.ListItemDefaults
@@ -70,7 +72,13 @@ fun HomePagerMaterial(
     val scrollBehavior = TopAppBarDefaults.exitUntilCollapsedScrollBehavior(rememberTopAppBarState())
 
     ExpressiveScaffold(
-        topBar = { TopBar(scrollBehavior = scrollBehavior) },
+        topBar = {
+            TopBar(
+                showSusfs = state.showSusfsPathConfig,
+                onSusfsClick = actions.onSusfsPathClick,
+                scrollBehavior = scrollBehavior,
+            )
+        },
         contentWindowInsets = WindowInsets.safeDrawing.only(WindowInsetsSides.Top + WindowInsetsSides.Horizontal)
     ) { innerPadding ->
         Column(
@@ -150,11 +158,23 @@ fun HomePagerMaterial(
 
 @Composable
 private fun TopBar(
+    showSusfs: Boolean,
+    onSusfsClick: () -> Unit,
     scrollBehavior: TopAppBarScrollBehavior? = null
 ) {
     LargeFlexibleTopAppBar(
         title = { Text(stringResource(R.string.app_name)) },
-        actions = { RebootListPopup() },
+        actions = {
+            if (showSusfs) {
+                IconButton(onClick = onSusfsClick) {
+                    Icon(
+                        Icons.Rounded.VisibilityOff,
+                        contentDescription = stringResource(R.string.home_susfs_path),
+                    )
+                }
+            }
+            RebootListPopup()
+        },
         colors = expressiveTopAppBarColors(),
         windowInsets = WindowInsets.safeDrawing.only(WindowInsetsSides.Top + WindowInsetsSides.Horizontal),
         scrollBehavior = scrollBehavior
@@ -514,6 +534,15 @@ private fun SystemInfoCard(systemInfo: SystemInfo) {
             Spacer(Modifier.height(16.dp))
             InfoCardItem(stringResource(R.string.home_kernel), systemInfo.kernelVersion)
             Spacer(Modifier.height(16.dp))
+            // KPM / SUSFS 有才显示：没有的内核不占一行
+            if (systemInfo.kpm.isNotBlank()) {
+                InfoCardItem(stringResource(R.string.home_kpm), systemInfo.kpm)
+                Spacer(Modifier.height(16.dp))
+            }
+            if (systemInfo.susfs.isNotBlank()) {
+                InfoCardItem(stringResource(R.string.home_susfs), systemInfo.susfs)
+                Spacer(Modifier.height(16.dp))
+            }
             InfoCardItem(stringResource(R.string.home_device_model), systemInfo.deviceModel)
             Spacer(Modifier.height(16.dp))
             InfoCardItem(stringResource(R.string.home_fingerprint), systemInfo.fingerprint)

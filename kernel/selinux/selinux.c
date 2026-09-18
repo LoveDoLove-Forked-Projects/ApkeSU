@@ -220,3 +220,81 @@ void escape_to_root_for_adb_root(void)
     }
     commit_creds(cred);
 }
+
+#ifdef CONFIG_KSU_SUSFS
+#define SUSFS_ZYGOTE_NEXT_CONTEXT "u:r:zygote_next:s0"
+#define SUSFS_PRIV_APP_CONTEXT "u:r:priv_app:s0:c512,c768"
+
+u32 susfs_ksu_sid __read_mostly;
+u32 susfs_init_sid __read_mostly;
+u32 susfs_zygote_sid __read_mostly;
+u32 susfs_zygote_next_sid __read_mostly;
+u32 susfs_priv_app_sid __read_mostly;
+
+static void susfs_set_sid(const char *context, u32 *sid)
+{
+    int ret;
+
+    if (!context || !sid)
+        return;
+
+    ret = security_secctx_to_secid(context, strlen(context), sid);
+    if (ret) {
+        *sid = 0;
+        pr_err("susfs: failed to resolve %s: %d\n", context, ret);
+    }
+}
+
+bool susfs_is_sid_equal(const struct cred *cred, u32 sid)
+{
+#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 18, 0)
+    const struct task_security_struct *tsec = selinux_cred(cred);
+#else
+    const struct cred_security_struct *tsec = selinux_cred(cred);
+#endif
+
+    return tsec && sid && tsec->sid == sid;
+}
+
+u32 susfs_get_sid_from_name(const char *context)
+{
+    u32 sid = 0;
+
+    susfs_set_sid(context, &sid);
+    return sid;
+}
+
+u32 susfs_get_current_sid(void)
+{
+    return current_sid();
+}
+
+bool susfs_is_current_zygote_domain(void)
+{
+    return unlikely(current_sid() == susfs_zygote_sid);
+}
+
+bool susfs_is_current_zygote_next_domain(void)
+{
+    return unlikely(current_sid() == susfs_zygote_next_sid);
+}
+
+bool susfs_is_current_ksu_domain(void)
+{
+    return unlikely(current_sid() == susfs_ksu_sid);
+}
+
+bool susfs_is_current_init_domain(void)
+{
+    return unlikely(current_sid() == susfs_init_sid);
+}
+
+void susfs_set_batch_sid(void)
+{
+    susfs_set_sid(ZYGOTE_CONTEXT, &susfs_zygote_sid);
+    susfs_set_sid(SUSFS_ZYGOTE_NEXT_CONTEXT, &susfs_zygote_next_sid);
+    susfs_set_sid(KERNEL_SU_CONTEXT, &susfs_ksu_sid);
+    susfs_set_sid(INIT_CONTEXT, &susfs_init_sid);
+    susfs_set_sid(SUSFS_PRIV_APP_CONTEXT, &susfs_priv_app_sid);
+}
+#endif

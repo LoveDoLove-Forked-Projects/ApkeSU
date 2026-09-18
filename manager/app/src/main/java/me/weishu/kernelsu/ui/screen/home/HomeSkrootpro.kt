@@ -20,6 +20,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.CheckBox
+import androidx.compose.material.icons.rounded.VisibilityOff
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -59,6 +60,10 @@ fun HomePagerSkrootpro(
 
     SkrootproScreen(
         title = state.customHomeTitle.ifBlank { stringResource(R.string.skrootpro_title) },
+        showAdd = state.showSusfsPathConfig,
+        onAddClick = actions.onSusfsPathClick,
+        actionIcon = Icons.Rounded.VisibilityOff,
+        actionContentDescription = stringResource(R.string.home_susfs_path),
         bottomInnerPadding = bottomInnerPadding,
     ) { contentPadding ->
         Column(
@@ -126,6 +131,19 @@ fun HomePagerSkrootpro(
                         label = stringResource(R.string.home_kernel_hook),
                         value = kernelHookTypeLabel(state.kernelHookTypes),
                     )
+                    // KPM / SUSFS 有才显示：没有的内核不占一行
+                    if (state.systemInfo.kpm.isNotBlank()) {
+                        SystemStatusLine(
+                            label = stringResource(R.string.home_kpm),
+                            value = state.systemInfo.kpm,
+                        )
+                    }
+                    if (state.systemInfo.susfs.isNotBlank()) {
+                        SystemStatusLine(
+                            label = stringResource(R.string.home_susfs),
+                            value = state.systemInfo.susfs,
+                        )
+                    }
                     SystemStatusLine(
                         label = "Adb",
                         value = stringResource(R.string.skrootpro_adb_disabled),

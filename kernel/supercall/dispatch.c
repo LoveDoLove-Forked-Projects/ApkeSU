@@ -5,6 +5,9 @@
 #include <linux/uaccess.h>
 #include <linux/version.h>
 #include <linux/thread_info.h>
+#ifdef CONFIG_KSU_SUSFS
+#include <linux/susfs.h>
+#endif
 #if IS_ENABLED(CONFIG_ABK_CONTROL)
 #include <linux/abk_control.h>
 #endif
@@ -158,6 +161,9 @@ static int do_report_event(void __user *arg)
             } else {
                 pr_info("boot_complete triggered\n");
                 on_boot_completed();
+#ifdef CONFIG_KSU_SUSFS
+                susfs_start_sdcard_monitor_fn();
+#endif
             }
         }
         break;
@@ -475,7 +481,9 @@ static int do_set_app_profile(void __user *arg)
     ret = ksu_set_app_profile(&cmd.profile);
     if (!ret) {
         ksu_persistent_allow_list();
+#ifndef CONFIG_KSU_SUSFS
         ksu_mark_running_process();
+#endif
     }
     return ret;
 }
@@ -544,7 +552,9 @@ static int do_get_wrapper_fd(void __user *arg)
 static int do_manage_mark(void __user *arg)
 {
     struct ksu_manage_mark_cmd cmd;
+#ifndef CONFIG_KSU_SUSFS
     int ret = 0;
+#endif
 
     if (copy_from_user(&cmd, arg, sizeof(cmd))) {
         pr_err("manage_mark: copy_from_user failed\n");
@@ -552,6 +562,19 @@ static int do_manage_mark(void __user *arg)
     }
 
     switch (cmd.operation) {
+#ifdef CONFIG_KSU_SUSFS
+    case KSU_MARK_GET:
+        if (cmd.pid != 0 && cmd.pid != current->pid)
+            return -EOPNOTSUPP;
+        cmd.result = susfs_is_current_proc_no_su() ? 0 : 1;
+        break;
+    case KSU_MARK_MARK:
+    case KSU_MARK_UNMARK:
+    case KSU_MARK_REFRESH:
+        if (cmd.pid != 0 && cmd.pid != current->pid)
+            return -EOPNOTSUPP;
+        break;
+#else
     case KSU_MARK_GET: {
         // Get task mark status
         ret = ksu_get_task_mark(cmd.pid);
@@ -591,6 +614,7 @@ static int do_manage_mark(void __user *arg)
         pr_info("manage_mark: refreshed running processes\n");
         break;
     }
+#endif
     default: {
         pr_err("manage_mark: invalid operation %u\n", cmd.operation);
         return -EINVAL;
@@ -603,6 +627,88 @@ static int do_manage_mark(void __user *arg)
 
     return 0;
 }
+
+#ifdef CONFIG_KSU_SUSFS
+int ksu_handle_sys_reboot(int magic1, int magic2, unsigned int cmd,
+                          void __user **arg)
+{
+    if (magic1 != KSU_INSTALL_MAGIC1)
+        return -EINVAL;
+
+    if (magic2 == SUSFS_MAGIC && current_uid().val == 0) {
+        switch (cmd) {
+#ifdef CONFIG_KSU_SUSFS_SUS_PATH
+        case CMD_SUSFS_ADD_SUS_PATH:
+            susfs_add_sus_path(arg);
+            return 0;
+        case CMD_SUSFS_ADD_SUS_PATH_LOOP:
+            susfs_add_sus_path_loop(arg);
+            return 0;
+#endif
+#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
+        case CMD_SUSFS_HIDE_SUS_MNTS_FOR_NON_SU_PROCS:
+            susfs_set_hide_sus_mnts_for_non_su_procs(arg);
+            return 0;
+#endif
+#ifdef CONFIG_KSU_SUSFS_SUS_KSTAT
+        case CMD_SUSFS_ADD_SUS_KSTAT:
+            susfs_add_sus_kstat(arg);
+            return 0;
+        case CMD_SUSFS_UPDATE_SUS_KSTAT:
+            susfs_update_sus_kstat(arg);
+            return 0;
+        case CMD_SUSFS_ADD_SUS_KSTAT_STATICALLY:
+            susfs_add_sus_kstat(arg);
+            return 0;
+#endif
+#ifdef CONFIG_KSU_SUSFS_SPOOF_UNAME
+        case CMD_SUSFS_SET_UNAME:
+            susfs_set_uname(arg);
+            return 0;
+#endif
+#ifdef CONFIG_KSU_SUSFS_ENABLE_LOG
+        case CMD_SUSFS_ENABLE_LOG:
+            susfs_enable_log(arg);
+            return 0;
+#endif
+#ifdef CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG
+        case CMD_SUSFS_SET_CMDLINE_OR_BOOTCONFIG:
+            susfs_set_cmdline_or_bootconfig(arg);
+            return 0;
+#endif
+#ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
+        case CMD_SUSFS_ADD_OPEN_REDIRECT:
+            susfs_add_open_redirect(arg);
+            return 0;
+#endif
+#ifdef CONFIG_KSU_SUSFS_SUS_MAP
+        case CMD_SUSFS_ADD_SUS_MAP:
+            susfs_add_sus_map(arg);
+            return 0;
+#endif
+        case CMD_SUSFS_ENABLE_AVC_LOG_SPOOFING:
+            susfs_set_avc_log_spoofing(arg);
+            return 0;
+        case CMD_SUSFS_SHOW_ENABLED_FEATURES:
+            susfs_get_enabled_features(arg);
+            return 0;
+        case CMD_SUSFS_SHOW_VARIANT:
+            susfs_show_variant(arg);
+            return 0;
+        case CMD_SUSFS_SHOW_VERSION:
+            susfs_show_version(arg);
+            return 0;
+        default:
+            return -EINVAL;
+        }
+    }
+
+    if (magic2 == KSU_INSTALL_MAGIC2)
+        return ksu_supercall_reboot_handler(arg);
+
+    return -EINVAL;
+}
+#endif
 
 static int do_nuke_ext4_sysfs(void __user *arg)
 {
