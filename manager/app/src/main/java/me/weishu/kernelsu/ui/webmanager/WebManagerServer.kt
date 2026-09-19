@@ -30,15 +30,18 @@ import me.weishu.kernelsu.ui.util.AppLanguageManager
 import me.weishu.kernelsu.ui.util.LauncherIconOption
 import me.weishu.kernelsu.ui.util.applyLauncherIcon
 import me.weishu.kernelsu.ui.util.collectRootDiagnosticInfo
+import me.weishu.kernelsu.ui.util.clearDynamicManager
 import me.weishu.kernelsu.ui.util.deleteHiddenPathConfig
 import me.weishu.kernelsu.ui.util.execKsud
 import me.weishu.kernelsu.ui.util.getCpuSpoofStatus
+import me.weishu.kernelsu.ui.util.getDynamicManagerStatus
 import me.weishu.kernelsu.ui.util.getHiddenPathConfig
 import me.weishu.kernelsu.ui.util.getHiddenPathLogs
 import me.weishu.kernelsu.ui.util.isCpuSpoofModelValid
 import me.weishu.kernelsu.ui.util.restoreDefaultCpuSpoof
 import me.weishu.kernelsu.ui.util.reboot
 import me.weishu.kernelsu.ui.util.saveCpuSpoofTarget
+import me.weishu.kernelsu.ui.util.setDynamicManagerCertificate
 import me.weishu.kernelsu.ui.util.setCpuSpoofEnabled
 import me.weishu.kernelsu.ui.util.setHiddenPathAutoLoad
 import me.weishu.kernelsu.ui.util.unloadHiddenPathKernelPaths
@@ -48,6 +51,7 @@ import me.weishu.kernelsu.ui.util.ensureManagerRegistered
 import me.weishu.kernelsu.ui.util.getKpmCaps
 import me.weishu.kernelsu.ui.util.getKpmExcludedApps
 import me.weishu.kernelsu.ui.util.getKpmList
+import me.weishu.kernelsu.ui.util.getNativeWebManagerUrl
 import me.weishu.kernelsu.ui.util.importKpm
 import me.weishu.kernelsu.ui.util.isManagerHiddenModuleId
 import me.weishu.kernelsu.ui.util.listModulesWithTimeout
@@ -61,10 +65,13 @@ import me.weishu.kernelsu.ui.util.rootAvailable
 import me.weishu.kernelsu.ui.util.setKpmAppExcluded
 import me.weishu.kernelsu.ui.util.setKpmEnabled
 import me.weishu.kernelsu.ui.util.setKpmPolicy
+import me.weishu.kernelsu.ui.util.startNativeWebManager
 import me.weishu.kernelsu.ui.util.toggleModule
 import me.weishu.kernelsu.ui.util.unloadKpm
 import me.weishu.kernelsu.ui.util.undoUninstallModule
 import me.weishu.kernelsu.ui.util.uninstallModule
+import me.weishu.kernelsu.stealth.DEFAULT_STEALTH_MODE_CODE
+import me.weishu.kernelsu.stealth.StealthModeStore
 import me.weishu.kernelsu.ui.webui.SuFilePathHandler
 import org.json.JSONArray
 import org.json.JSONObject
@@ -497,6 +504,10 @@ internal object WebManagerServer {
                 forceRefresh = parameters["refresh"] == "1",
             )
             method == "GET" && path == "/api/settings" -> HttpResponse(200, settingsJson())
+            method == "GET" && path == "/api/settings/manager" ->
+                HttpResponse(200, managerAppSettingsJson().toString())
+            method == "GET" && path == "/api/stealth" -> HttpResponse(200, stealthStatusJson().toString())
+            method == "GET" && path == "/api/dynamic-manager" -> dynamicManagerStatusResponse()
             method == "GET" && assetPath != null -> assetResponse(assetPath.kind, assetPath.name)
             method == "POST" && assetPath != null ->
                 uploadAssetResponse(assetPath.kind, assetPath.name, parameters, bodyBytes)
@@ -512,9 +523,11 @@ internal object WebManagerServer {
             method == "POST" && path == "/api/tools/pathmask" -> handlePathmaskAction(body)
             method == "POST" && path == "/api/tools/cpu-spoof" -> handleCpuSpoofAction(body)
             method == "POST" && path == "/api/tools/reboot" -> handleRebootAction(body)
+            method == "POST" && path == "/api/tools/native-susfs" -> nativeSusfsManagerResponse()
             method == "POST" && path == "/api/tools/soft-reboot" ->
                 scheduleReboot(WebManagerRebootMode.SOFT)
             method == "POST" && path == "/api/settings/language" -> handleLanguageAction(body)
+            method == "POST" && path == "/api/settings/manager" -> handleManagerAppSettingsAction(body)
             method == "POST" && path == "/api/features" -> handleFeatureAction(body)
             method == "POST" && path == "/api/settings/asset-meta" -> handleAssetMetaAction(body)
             method == "GET" && path == "/api/device" -> HttpResponse(
@@ -543,6 +556,9 @@ internal object WebManagerServer {
                 body = body,
             )
             method == "POST" && path == "/api/settings/auto-start" -> handleAutoStartAction(body)
+            method == "POST" && path == "/api/stealth" -> handleStealthAction(body)
+            method == "POST" && path == "/api/stealth/disable" -> handleStealthDisable(body)
+            method == "POST" && path == "/api/dynamic-manager" -> handleDynamicManagerAction(body)
             method == "POST" && path == "/api/settings/cache" -> invalidateCacheResponse()
             method == "POST" && jobApi?.action == "cancel" -> cancelJobResponse(jobApi.jobId)
             method == "POST" && moduleApi?.action == "action" -> startModuleAction(moduleApi.moduleId)
@@ -1217,7 +1233,10 @@ internal object WebManagerServer {
             if (updated) updatedCount++
         }
         synchronized(appSnapshotLock) { cachedAppSnapshot = null }
-        return if (updatedCount == entry.profileKeys.size) {
+        val verified = updatedCount == entry.profileKeys.size && runCatching {
+            Natives.getAllowList().contains(uid) == allowSu
+        }.getOrDefault(false)
+        return if (verified) {
             startWarmUp()
             HttpResponse(
                 200,
@@ -1227,12 +1246,18 @@ internal object WebManagerServer {
                     .put("updatedCount", updatedCount)
                     .toString(),
             )
-        } else {
+        } else if (updatedCount != entry.profileKeys.size) {
             errorResponse(
                 status = 500,
                 code = "profile_update_failed",
                 message = "超级用户配置更新失败",
                 detail = "updated $updatedCount of ${entry.profileKeys.size}",
+            )
+        } else {
+            errorResponse(
+                status = 409,
+                code = "profile_verification_failed",
+                message = "内核未保存新的 Root 授权状态",
             )
         }
     }
@@ -2035,6 +2060,23 @@ internal object WebManagerServer {
         }
     }
 
+    private fun nativeSusfsManagerResponse(): HttpResponse {
+        if (Natives.isLkmMode || Natives.isLateLoadMode) {
+            return errorResponse(409, "gki_required", "SUSFS 管理仅支持 GKI 模式")
+        }
+        val url = runWithDeadline(10_000L, "native-susfs-manager") {
+            getNativeWebManagerUrl() ?: run {
+                startNativeWebManager()
+                getNativeWebManagerUrl()
+            }
+        }
+        return if (url != null) {
+            HttpResponse(200, JSONObject().put("ok", true).put("url", url).toString())
+        } else {
+            errorResponse(503, "native_web_manager_unavailable", "无法启动 ksud 网页管理器")
+        }
+    }
+
     private fun handleKPatchAction(body: String?): HttpResponse {
         val payload = runCatching { JSONObject(body.orEmpty()) }.getOrNull()
             ?: return errorResponse(400, "bad_request", "请求内容不是合法 JSON")
@@ -2217,13 +2259,104 @@ internal object WebManagerServer {
         val payload = runCatching { JSONObject(body.orEmpty()) }.getOrNull()
             ?: return errorResponse(400, "bad_request", "请求内容不是合法 JSON")
         val tag = payload.optString("tag", "").trim()
-        val ok = runCatching { AppLanguageManager.setSelectedLanguage(ksuApp, tag) }.getOrDefault(false)
+        val result = ManagerAppSettingsStore.applyWebUpdate(JSONObject().put("language", tag))
+        val ok = result.isSuccess
         diagnostics.info("language", "set $tag -> $ok")
         return if (ok) {
             HttpResponse(200, JSONObject().put("ok", true).put("tag", tag).toString())
         } else {
-            errorResponse(400, "unsupported_language", "不支持的语言或写入失败")
+            val error = result.exceptionOrNull()
+            errorResponse(
+                if (error is IllegalArgumentException) 400 else 500,
+                if (error is IllegalArgumentException) "unsupported_language" else "manager_settings_write_failed",
+                error?.message ?: "不支持的语言或写入失败",
+            )
         }
+    }
+
+    private fun managerAppSettingsJson(): JSONObject = JSONObject()
+        .put("ok", true)
+        .put("manager", ManagerAppSettingsStore.snapshot().toJson())
+
+    private fun handleManagerAppSettingsAction(body: String?): HttpResponse {
+        val payload = runCatching { JSONObject(body.orEmpty()) }.getOrNull()
+            ?: return errorResponse(400, "invalid_json", "请求内容不是合法 JSON")
+        return ManagerAppSettingsStore.applyWebUpdate(payload).fold(
+            onSuccess = { settings ->
+                HttpResponse(
+                    200,
+                    JSONObject().put("ok", true).put("manager", settings.toJson()).toString(),
+                )
+            },
+            onFailure = { error ->
+                errorResponse(
+                    if (error is IllegalArgumentException) 400 else 500,
+                    if (error is IllegalArgumentException) {
+                        "invalid_manager_setting"
+                    } else {
+                        "manager_settings_write_failed"
+                    },
+                    error.message ?: "软件管理器设置写入失败",
+                )
+            },
+        )
+    }
+
+    private fun dynamicManagerStatusResponse(): HttpResponse {
+        val state = runWithDeadline(TOOLS_QUERY_DEADLINE_MILLIS, "dynamic-manager-status") {
+            runBlocking { getDynamicManagerStatus().getOrThrow() }
+        } ?: return errorResponse(504, "dynamic_manager_timeout", "读取动态管理器状态超时")
+        return HttpResponse(200, dynamicManagerJson(state).toString())
+    }
+
+    private fun dynamicManagerJson(state: me.weishu.kernelsu.ui.util.DynamicManagerCliState): JSONObject {
+        val managers = JSONObject()
+        state.managerSignatureIndexes.forEach { (appId, signatureIndex) ->
+            managers.put(appId.toString(), signatureIndex)
+        }
+        return JSONObject()
+            .put("ok", true)
+            .put(
+                "status",
+                JSONObject()
+                    .put("schemaVersion", 2)
+                    .put("supported", state.supported)
+                    .put("configured", state.configured)
+                    .put("active", state.active)
+                    .put("certificateSize", state.certificateSize)
+                    .put("certificateSha256", state.certificateSha256)
+                    .put("managers", managers)
+                    .put("error", state.error.ifBlank { JSONObject.NULL }),
+            )
+    }
+
+    private fun handleDynamicManagerAction(body: String?): HttpResponse {
+        val payload = runCatching { JSONObject(body.orEmpty()) }.getOrNull()
+            ?: return errorResponse(400, "invalid_json", "请求内容不是合法 JSON")
+        val action = payload.optString("action")
+        val result = runWithDeadline(TOOLS_ACTION_DEADLINE_MILLIS, "dynamic-manager-$action") {
+            runBlocking {
+                when (action) {
+                    "clear" -> clearDynamicManager()
+                    "set" -> runCatching {
+                        val size = payload.optInt("certificateSize", -1)
+                        val hash = payload.optString("certificateSha256", "")
+                        setDynamicManagerCertificate(size, hash).getOrThrow()
+                    }
+                    else -> Result.failure(IllegalArgumentException("不支持这个动态管理器操作"))
+                }
+            }
+        } ?: return errorResponse(504, "dynamic_manager_timeout", "动态管理器操作超时")
+        return result.fold(
+            onSuccess = { dynamicManagerStatusResponse() },
+            onFailure = { error ->
+                errorResponse(
+                    if (error is IllegalArgumentException) 400 else 409,
+                    "dynamic_manager_update_failed",
+                    error.message ?: "动态管理器更新失败",
+                )
+            },
+        )
     }
 
     // -------------------------------------------------- 自定义外观（壁纸与图标）
@@ -2434,7 +2567,101 @@ internal object WebManagerServer {
             .put("apiVersion", API_VERSION)
             .put("assets", assetsJson())
             .put("assetCatalog", assetCatalogJson())
+            .put("stealth", stealthStatusJson())
+            .put("manager", ManagerAppSettingsStore.snapshot().toJson())
             .toString()
+    }
+
+    private fun stealthStatusJson(): JSONObject {
+        val rootState = StealthModeStore.readRootState().getOrNull()
+        return JSONObject()
+            .put("enabled", rootState?.enabled ?: StealthModeStore.isEnabled())
+            .put("codeBackedUp", rootState?.codeBackedUp ?: false)
+            .put("code", rootState?.code ?: StealthModeStore.code())
+    }
+
+    private fun handleStealthAction(body: String): HttpResponse {
+        val json = runCatching { JSONObject(body) }.getOrNull()
+            ?: return errorResponse(400, "invalid_body", "请求体不是合法 JSON")
+        if (!json.has("enabled")) {
+            return errorResponse(400, "enabled_required", "缺少 enabled 布尔值")
+        }
+        val enabled = json.optBoolean("enabled")
+        if (!enabled) {
+            return handleStealthDisable(body)
+        }
+        val requestedCode = json.optString("code", StealthModeStore.code())
+        val normalizedCode = StealthModeStore.normalizeCode(requestedCode)
+            ?: return errorResponse(
+                400,
+                "invalid_stealth_code",
+                "隐身密令必须是 3-16 位数字或 *#*#数字#*#* 格式",
+            )
+        return StealthModeStore.setEnabledBlocking(
+            enabled = enabled,
+            requestedCode = normalizedCode,
+        ).fold(
+            onSuccess = {
+                HttpResponse(
+                    200,
+                    JSONObject()
+                        .put("ok", true)
+                        .put("enabled", enabled)
+                        .put("codeBackedUp", true)
+                        .put("code", normalizedCode)
+                        .toString(),
+                )
+            },
+            onFailure = { error ->
+                errorResponse(
+                    status = 500,
+                    code = "stealth_update_failed",
+                    message = error.message ?: "隐身模式更新失败",
+                )
+            },
+        )
+    }
+
+    private fun handleStealthDisable(body: String): HttpResponse {
+        val json = runCatching { JSONObject(body) }.getOrNull()
+            ?: return errorResponse(400, "invalid_body", "请求体不是合法 JSON")
+        val requestedCode = json.optString("code").takeIf { json.has("code") }
+            ?: return errorResponse(400, "stealth_code_required", "关闭隐身模式必须输入密令")
+        val rootState = StealthModeStore.readRootState().getOrElse { error ->
+            return errorResponse(
+                status = 500,
+                code = "stealth_state_unavailable",
+                message = "无法读取隐身模式状态",
+                detail = error,
+            )
+        }
+        val configuredCode = rootState.code ?: DEFAULT_STEALTH_MODE_CODE
+        if (!StealthModeStore.matchesRequestedCode(requestedCode, configuredCode)) {
+            return errorResponse(403, "stealth_code_mismatch", "隐身密令不正确")
+        }
+        return StealthModeStore.setEnabledBlocking(
+            enabled = false,
+            requestedCode = configuredCode,
+        ).fold(
+            onSuccess = {
+                HttpResponse(
+                    200,
+                    JSONObject()
+                        .put("ok", true)
+                        .put("enabled", false)
+                        .put("codeBackedUp", true)
+                        .toString(),
+                )
+            },
+            onFailure = { error ->
+                errorResponse(
+                    status = 500,
+                    code = "stealth_disable_failed",
+                    message = "隐身模式关闭失败",
+                    detail = error,
+                )
+            },
+        )
     }
 
     private fun handleAutoStartAction(body: String): HttpResponse {

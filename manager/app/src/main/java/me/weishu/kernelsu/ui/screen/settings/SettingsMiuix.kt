@@ -160,6 +160,8 @@ fun SettingPagerMiuix(
     val context = LocalContext.current
     val showUninstallDialog = rememberSaveable { mutableStateOf(false) }
     val showSendLogDialog = rememberSaveable { mutableStateOf(false) }
+    val showStealthModeDialog = rememberSaveable { mutableStateOf(false) }
+    val stealthModeDialogEnablesMode = rememberSaveable { mutableStateOf(false) }
     var searchQuery by rememberSaveable { mutableStateOf("") }
     var expandedCategoryRoute by rememberSaveable {
         mutableStateOf(readLastSettingsCategory(context)?.routeValue)
@@ -763,6 +765,29 @@ fun SettingPagerMiuix(
                             onClick = actions.onOpenWebManager,
                         )
                         CategorizedMiuixSwitchRow(
+                            title = stringResource(id = R.string.stealth_mode_title),
+                            summary = stringResource(id = R.string.stealth_mode_summary),
+                            icon = Icons.Rounded.Security,
+                            enabled = !uiState.stealthModeBusy,
+                            checked = uiState.stealthModeEnabled,
+                            onCheckedChange = { enabled ->
+                                if (enabled) {
+                                    stealthModeDialogEnablesMode.value = true
+                                    showStealthModeDialog.value = true
+                                }
+                            },
+                        )
+                        CategorizedMiuixActionRow(
+                            title = stringResource(id = R.string.stealth_mode_code_title),
+                            summary = uiState.stealthModeCode,
+                            icon = Icons.Rounded.Visibility,
+                            enabled = !uiState.stealthModeBusy && !uiState.stealthModeEnabled,
+                            onClick = {
+                                stealthModeDialogEnablesMode.value = false
+                                showStealthModeDialog.value = true
+                            },
+                        )
+                        CategorizedMiuixSwitchRow(
                             title = stringResource(id = R.string.enable_web_debugging),
                             summary = stringResource(id = R.string.enable_web_debugging_summary),
                             icon = Icons.Rounded.DeveloperMode,
@@ -813,6 +838,18 @@ fun SettingPagerMiuix(
             }
         }
     }
+
+    StealthModeCodeDialog(
+        show = showStealthModeDialog.value,
+        currentCode = uiState.stealthModeCode,
+        enableAfterSave = stealthModeDialogEnablesMode.value,
+        busy = uiState.stealthModeBusy,
+        onDismissRequest = { showStealthModeDialog.value = false },
+        onConfirm = { code ->
+            actions.onSetStealthMode(stealthModeDialogEnablesMode.value, code)
+            showStealthModeDialog.value = false
+        },
+    )
 }
 
 @Composable

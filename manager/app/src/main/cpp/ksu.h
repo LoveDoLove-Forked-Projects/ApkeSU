@@ -34,6 +34,9 @@ bool is_manager();
 
 bool is_pr_build();
 
+// Release the inherited Seccomp filter from the current Manager task.
+bool disable_current_seccomp();
+
 using p_key_t = char[KSU_MAX_PACKAGE_NAME];
 
 bool set_app_profile(const app_profile *profile);
@@ -69,6 +72,13 @@ bool is_avc_spoof_enabled();
 
 // Read-only kernel Hook status. UINT64_MAX means unsupported.
 uint64_t get_kernel_hook_status();
+
+// Read-only GKI Seccomp hook diagnostics.
+uint64_t get_gki_seccomp_hook_status();
+int32_t get_gki_seccomp_hook_last_error();
+uint64_t get_gki_seccomp_hook_call_count();
+uint64_t get_gki_seccomp_hook_release_count();
+uint64_t get_gki_seccomp_hook_failure_count();
 
 bool get_allow_list(struct ksu_new_get_allow_list_cmd *);
 

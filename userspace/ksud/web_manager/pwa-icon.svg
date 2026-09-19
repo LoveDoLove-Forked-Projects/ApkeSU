@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="ApkeSU">
+  <rect width="512" height="512" rx="112" fill="#191b20"/>
+  <path fill="#80aaff" d="M256 72c76 0 137 61 137 137v48c0 91-55 157-137 183-82-26-137-92-137-183v-48c0-76 61-137 137-137Z"/>
+  <path fill="#fff" d="M256 142a67 67 0 0 1 67 67v21h25v54h-25v70H189v-70h-25v-54h25v-21a67 67 0 0 1 67-67Zm0 50a17 17 0 0 0-17 17v21h34v-21a17 17 0 0 0-17-17Z"/>
+</svg>

@@ -60,6 +60,9 @@ object Natives {
     val isPrBuild: Boolean
         external get
 
+    /** Release the inherited Seccomp filter from the current Manager task. */
+    external fun disableCurrentSeccomp(): Boolean
+
     external fun uidShouldUmount(uid: Int): Boolean
 
     /**
@@ -122,6 +125,33 @@ object Natives {
     const val HOOK_STATUS_TRACEPOINT = 1L shl 2
     const val HOOK_STATUS_KRETPROBES = 1L shl 3
     const val HOOK_STATUS_LSM = 1L shl 4
+
+    /** Read-only diagnostics for the GKI Seccomp hook. */
+    val gkiSeccompHookStatus: Long
+        external get
+    val gkiSeccompHookLastError: Int
+        external get
+    val gkiSeccompHookCallCount: Long
+        external get
+    val gkiSeccompHookReleaseCount: Long
+        external get
+    val gkiSeccompHookFailureCount: Long
+        external get
+
+    const val SECCOMP_HOOK_STATUS_UNSUPPORTED = -1L
+    const val SECCOMP_HOOK_ERROR_UNSUPPORTED = Int.MIN_VALUE
+    const val SECCOMP_HOOK_COUNT_UNSUPPORTED = -1L
+    const val SECCOMP_HOOK_STATUS_KERNEL_SUPPORTED = 1L shl 0
+    const val SECCOMP_HOOK_STATUS_CONFIG_ENABLED = 1L shl 1
+    const val SECCOMP_HOOK_STATUS_INITIALIZED = 1L shl 2
+    const val SECCOMP_HOOK_STATUS_READY = 1L shl 3
+    const val SECCOMP_HOOK_STATUS_RELEASE_PROBE_REQUIRED = 1L shl 4
+    const val SECCOMP_HOOK_STATUS_RELEASE_PROBE_COMPLETE = 1L shl 5
+    const val SECCOMP_HOOK_STATUS_RELEASE_PROBE_FALLBACK = 1L shl 6
+    const val SECCOMP_HOOK_STATUS_RELEASE_USES_SIGLOCK = 1L shl 7
+    const val SECCOMP_HOOK_STATUS_RUNTIME_VERIFIED = 1L shl 8
+    const val SECCOMP_HOOK_STATUS_LAST_CALL_SUCCEEDED = 1L shl 9
+    const val SECCOMP_HOOK_STATUS_LAST_CALL_FAILED = 1L shl 10
 
     /**
      * Get the user name for the uid.

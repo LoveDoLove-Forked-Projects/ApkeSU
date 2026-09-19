@@ -251,6 +251,8 @@ static const __u32 KSU_IOCTL_SET_INIT_PGRP = _IO('K', 19);
 static const __u32 KSU_IOCTL_GET_SULOG_FD = _IOW('K', 20, struct ksu_get_sulog_fd_cmd);
 static const __u32 KSU_IOCTL_DISABLE_ESCAPE_TO_ROOT = _IO('K', 21);
 static const __u32 KSU_IOCTL_SET_MANAGER_APPID = _IOW('K', 22, struct ksu_set_manager_appid_cmd);
+/* Release the current Manager task's inherited Seccomp filter. */
+static const __u32 KSU_IOCTL_DISABLE_CURRENT_SECCOMP = _IO('K', 23);
 /* Downstream extensions. 100-102 and 104 are reserved by existing integrations. */
 static const __u32 KSU_IOCTL_ENABLE_KPM = _IOC(_IOC_READ, 'K', 102, 0);
 static const __u32 KSU_IOCTL_DYNAMIC_MANAGER = _IOC(_IOC_READ | _IOC_WRITE, 'K', 103, 0);

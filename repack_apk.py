@@ -111,15 +111,37 @@ def find_strip_tool() -> Optional[Path]:
                 if versions:
                     ndk_root = str(versions[0])
 
+    def strip_tool_in(toolchain_bin: Path) -> Optional[Path]:
+        for name in ("llvm-strip", "llvm-strip.exe", "strip", "strip.exe"):
+            candidate = toolchain_bin / name
+            try:
+                if candidate.exists():
+                    return candidate
+            except OSError:
+                continue
+        return None
+
     if ndk_root:
-        toolchain_bin = Path(ndk_root) / "toolchains" / "llvm" / "prebuilt"
-        if toolchain_bin.exists():
-            for prebuilt in toolchain_bin.iterdir():
-                bin_dir = prebuilt / "bin"
-                for name in ("llvm-strip", "llvm-strip.exe", "strip", "strip.exe"):
-                    candidate = bin_dir / name
-                    if candidate.exists():
-                        return candidate
+        # 同一个 NDK 目录里可能同时存在 linux-x86_64 与 windows-x86_64 预编译工具链，
+        # 先按主机标签直接取对应目录，避免把 Linux 可执行文件当成本机 strip 调用。
+        host_tags = ["linux-x86_64"]
+        if os.name == "nt":
+            host_tags = ["windows-x86_64"]
+        elif sys.platform == "darwin":
+            host_tags = ["darwin-x86_64", "darwin-arm64"]
+        toolchain_root = Path(ndk_root) / "toolchains" / "llvm" / "prebuilt"
+        for tag in host_tags:
+            found = strip_tool_in(toolchain_root / tag / "bin")
+            if found is not None:
+                return found
+        try:
+            prebuilt_dirs = [path for path in toolchain_root.iterdir() if path.is_dir()]
+        except OSError:
+            prebuilt_dirs = []
+        for prebuilt in prebuilt_dirs:
+            found = strip_tool_in(prebuilt / "bin")
+            if found is not None:
+                return found
 
     # Fall back to PATH.
     for name in ("llvm-strip", "strip"):

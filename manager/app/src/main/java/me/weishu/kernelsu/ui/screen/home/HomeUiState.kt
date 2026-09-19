@@ -5,6 +5,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.Immutable
 import androidx.compose.ui.res.stringResource
 import me.weishu.kernelsu.KernelVersion
+import me.weishu.kernelsu.Natives
 import me.weishu.kernelsu.R
 import me.weishu.kernelsu.ksuApp
 
@@ -158,6 +159,38 @@ data class HomeUiState(
             kernelUAPIVersion?.let { "$version-$it" } ?: version.toString()
         } ?: "--"
 }
+
+internal fun HomeUiState.asStealthModeState(): HomeUiState = copy(
+    ksuVersion = null,
+    isKernelActive = false,
+    kernelUAPIVersion = null,
+    lkmMode = null,
+    hiddenPathLkmMode = false,
+    isManager = false,
+    isKernelPrBuild = false,
+    requiresNewKernel = false,
+    uapiMismatch = false,
+    isRootAvailable = false,
+    rootRuntimeState = RootRuntimeState.DriverDisconnected,
+    daemonVersionMismatch = false,
+    kernelHookTypes = emptyList(),
+    isSafeMode = false,
+    isLateLoadMode = false,
+    superuserCount = 0,
+    moduleCount = 0,
+    systemInfo = systemInfo.copy(
+        seccompStatus = 0,
+        seccompFailureReason = "",
+        seccompProcessStatus = -1,
+        seccompHookStatus = Natives.SECCOMP_HOOK_STATUS_UNSUPPORTED,
+        seccompHookLastError = Natives.SECCOMP_HOOK_ERROR_UNSUPPORTED,
+        seccompHookCallCount = Natives.SECCOMP_HOOK_COUNT_UNSUPPORTED,
+        seccompHookReleaseCount = Natives.SECCOMP_HOOK_COUNT_UNSUPPORTED,
+        seccompHookFailureCount = Natives.SECCOMP_HOOK_COUNT_UNSUPPORTED,
+        kpm = "",
+        susfs = "",
+    ),
+)
 
 @Immutable
 data class HomeActions(

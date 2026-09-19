@@ -39,6 +39,7 @@ import me.weishu.kernelsu.ui.util.DEFAULT_CUSTOM_WALLPAPER_PASSTHROUGH_OPACITY
 import me.weishu.kernelsu.ui.util.LauncherIconOption
 import me.weishu.kernelsu.ui.util.MediaVisualSettings
 import me.weishu.kernelsu.ui.util.StartupAnimationSettings
+import me.weishu.kernelsu.stealth.DEFAULT_STEALTH_MODE_CODE
 
 enum class UiDecorationSaveState {
     Idle,
@@ -122,6 +123,9 @@ data class SettingsUiState(
     val customNavigationIcons: CustomNavigationIconSet = CustomNavigationIconSet(),
     val deltaColorVariant: String = DeltaColorVariant.DEFAULT_VALUE,
     val webManagerAutoStart: Boolean = false,
+    val stealthModeEnabled: Boolean = false,
+    val stealthModeCode: String = DEFAULT_STEALTH_MODE_CODE,
+    val stealthModeBusy: Boolean = false,
 
     // Su Compat
     val suCompatStatus: String = "",
@@ -286,6 +290,7 @@ data class SettingsScreenActions(
     val onSetEnableWebDebugging: (Boolean) -> Unit,
     val onSetWebManagerAutoStart: (Boolean) -> Unit,
     val onOpenWebManager: () -> Unit,
+    val onSetStealthMode: (Boolean, String) -> Unit,
     val onSetAutoJailbreak: (Boolean) -> Unit,
     val onSetUseSoftReboot: (Boolean) -> Unit,
     val onSetDeltaColorVariant: (String) -> Unit,

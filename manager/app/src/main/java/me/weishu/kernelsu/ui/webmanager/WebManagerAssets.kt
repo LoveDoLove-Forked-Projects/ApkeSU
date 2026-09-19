@@ -67,15 +67,16 @@ internal object WebManagerAssets {
 
     /**
      * 收敛前端传来的外观参数；非法值回落到默认值，避免坏数据把界面搞坏。
-     * 壁纸：适应方式 / 缩放 / 水平与垂直偏移 / 变暗 / 模糊；图标：缩放 / 垂直偏移。
+     * 壁纸：适应方式 / 缩放 / 水平与垂直偏移 / 变暗 / 模糊；图标：缩放 / 水平与垂直偏移。
      */
     fun normalizeMeta(kind: String, raw: JSONObject?, updatedAt: Long): JSONObject {
         val meta = JSONObject()
         meta.put("kind", kind)
         meta.put("updatedAt", updatedAt)
         if (kind == KIND_NAV_ICON) {
-            meta.put("scale", clampDouble(raw?.optDouble("scale") ?: 1.0, 0.5, 1.8))
-            meta.put("offsetY", clampDouble(raw?.optDouble("offsetY") ?: 0.0, -8.0, 8.0))
+            meta.put("scale", clampDouble(raw?.optDouble("scale") ?: 1.0, 0.5, 3.0))
+            meta.put("offsetX", clampDouble(raw?.optDouble("offsetX") ?: 0.0, -12.0, 12.0))
+            meta.put("offsetY", clampDouble(raw?.optDouble("offsetY") ?: 0.0, -12.0, 12.0))
         } else {
             val fit = raw?.optString("fit")?.trim()?.lowercase().orEmpty()
             meta.put("fit", if (fit in wallpaperFits) fit else DEFAULT_WALLPAPER_FIT)

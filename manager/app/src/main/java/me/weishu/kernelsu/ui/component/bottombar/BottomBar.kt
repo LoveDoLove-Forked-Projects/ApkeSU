@@ -48,6 +48,7 @@ class MainPagerState(
     private val coroutineScope: CoroutineScope,
     private val pageCountState: MutableIntState,
     restoredDestination: MainDestination = MainDestination.Home,
+    initialStealthModeEnabled: Boolean = false,
 ) {
     var selectedPage by mutableIntStateOf(pagerState.currentPage)
         private set
@@ -59,6 +60,9 @@ class MainPagerState(
         private set
 
     var kpmActive by mutableStateOf(false)
+        private set
+
+    var stealthModeEnabled by mutableStateOf(initialStealthModeEnabled)
         private set
 
     private var navJob: Job? = null
@@ -99,7 +103,7 @@ class MainPagerState(
     }
 
     fun animateTo(destination: MainDestination) {
-        mainDestinations(kpmActive)
+        mainDestinations(kpmActive, stealthModeEnabled)
             .indexOf(destination)
             .takeIf { it >= 0 }
             ?.let(::animateToPage)
@@ -118,7 +122,7 @@ class MainPagerState(
     }
 
     fun destinationForPage(page: Int = selectedPage): MainDestination {
-        return mainDestinations(kpmActive).getOrNull(page) ?: MainDestination.Home
+        return mainDestinations(kpmActive, stealthModeEnabled).getOrNull(page) ?: MainDestination.Home
     }
 
     fun updateFeatureAvailability(available: Boolean?) {
@@ -141,6 +145,7 @@ class MainPagerState(
                 available = false,
                 selectedPage = selectedPage,
                 kpmActive = kpmActive,
+                stealthModeEnabled = stealthModeEnabled,
             )
         ) {
             animateToPage(0)
@@ -190,7 +195,7 @@ class MainPagerState(
         navJob = null
         kpmReconfigurationJob?.cancel()
         isNavigating = false
-        pageCountState.intValue = mainDestinations(resolvedAvailability).size
+        pageCountState.intValue = mainDestinations(resolvedAvailability, stealthModeEnabled).size
         kpmActive = resolvedAvailability
         val targetDestination = if (
             resolvedAvailability &&
@@ -202,7 +207,7 @@ class MainPagerState(
             currentDestination
         }
         pendingRestoredDestination = null
-        val target = mainDestinations(resolvedAvailability).indexOf(targetDestination)
+        val target = mainDestinations(resolvedAvailability, stealthModeEnabled).indexOf(targetDestination)
             .takeIf { it >= 0 }
             ?: 0
         selectedPage = target
@@ -215,6 +220,39 @@ class MainPagerState(
             ) {
                 runCatching { pagerState.scrollToPage(target) }
                 if (navigationGeneration == generation && kpmActive == resolvedAvailability) {
+                    selectedPage = pagerState.settledPage
+                }
+            }
+            if (navigationGeneration == generation) {
+                kpmReconfigurationJob = null
+            }
+        }
+    }
+
+    fun updateStealthMode(enabled: Boolean) {
+        if (stealthModeEnabled == enabled) return
+        val currentPage = if (isNavigating || kpmReconfigurationJob?.isActive == true) {
+            selectedPage
+        } else {
+            pagerState.settledPage
+        }
+        val currentDestination = destinationForPage(currentPage)
+        val generation = ++navigationGeneration
+        navJob?.cancel()
+        navJob = null
+        kpmReconfigurationJob?.cancel()
+        isNavigating = false
+        stealthModeEnabled = enabled
+        val destinations = mainDestinations(kpmActive, enabled)
+        pageCountState.intValue = destinations.size
+        val target = destinations.indexOf(currentDestination).takeIf { it >= 0 } ?: 0
+        selectedPage = target
+        pendingRestoredDestination = null
+        kpmReconfigurationJob = coroutineScope.launch {
+            kotlinx.coroutines.yield()
+            if (navigationGeneration == generation && target in 0 until pagerState.pageCount) {
+                runCatching { pagerState.scrollToPage(target) }
+                if (navigationGeneration == generation) {
                     selectedPage = pagerState.settledPage
                 }
             }
@@ -291,9 +329,10 @@ internal fun shouldResetMainPagerForFeatureAvailability(
     available: Boolean?,
     selectedPage: Int,
     kpmActive: Boolean = false,
+    stealthModeEnabled: Boolean = false,
 ): Boolean {
     if (available != false) return false
-    return when (mainDestinations(kpmActive).getOrNull(selectedPage)) {
+    return when (mainDestinations(kpmActive, stealthModeEnabled).getOrNull(selectedPage)) {
         MainDestination.Kpm,
         MainDestination.SuperUser,
         MainDestination.Module,
@@ -313,11 +352,18 @@ fun rememberMainPagerState(
     coroutineScope: CoroutineScope = rememberCoroutineScope(),
     pageCountState: MutableIntState = androidx.compose.runtime.remember { mutableIntStateOf(4) },
     restoredDestination: MainDestination = MainDestination.Home,
+    initialStealthModeEnabled: Boolean = false,
 ): MainPagerState {
     // restoredDestination is only an initial hint. Re-keying this state on every
     // persisted destination update would cancel navigation and reset the pager.
     return remember(pagerState, coroutineScope, pageCountState) {
-        MainPagerState(pagerState, coroutineScope, pageCountState, restoredDestination)
+        MainPagerState(
+            pagerState,
+            coroutineScope,
+            pageCountState,
+            restoredDestination,
+            initialStealthModeEnabled,
+        )
     }
 }
 
@@ -360,7 +406,13 @@ enum class MainDestination(
     Settings(R.string.settings, Icons.Rounded.Settings, CustomNavigationIconSlot.Settings),
 }
 
-fun mainDestinations(kpmActive: Boolean): List<MainDestination> {
+fun mainDestinations(
+    kpmActive: Boolean,
+    stealthModeEnabled: Boolean = false,
+): List<MainDestination> {
+    if (stealthModeEnabled) {
+        return listOf(MainDestination.Home)
+    }
     return if (kpmActive) {
         listOf(
             MainDestination.Home,
@@ -400,8 +452,8 @@ fun BottomBar(
     modifier: Modifier = Modifier,
 ) {
     val mainState = LocalMainPagerState.current
-    if (!mainState.fullFeatured) return
-    val destinations = mainDestinations(mainState.kpmActive)
+    if (!mainState.fullFeatured || mainState.stealthModeEnabled) return
+    val destinations = mainDestinations(mainState.kpmActive, mainState.stealthModeEnabled)
 
     if (LocalUiMode.current == UiMode.Material) {
         BottomBarMaterial(navigationBadge, destinations)
@@ -451,8 +503,8 @@ fun SideRail(
     modifier: Modifier = Modifier,
 ) {
     val mainState = LocalMainPagerState.current
-    if (!mainState.fullFeatured) return
-    val destinations = mainDestinations(mainState.kpmActive)
+    if (!mainState.fullFeatured || mainState.stealthModeEnabled) return
+    val destinations = mainDestinations(mainState.kpmActive, mainState.stealthModeEnabled)
 
     if (LocalUiMode.current == UiMode.Material) {
         NavigationRailMaterial(navigationBadge, destinations, modifier)

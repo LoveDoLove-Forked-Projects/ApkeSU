@@ -241,6 +241,7 @@ fun SettingPager(
                 ).show()
             }
         },
+        onSetStealthMode = viewModel::setStealthMode,
         onSetAutoJailbreak = viewModel::setAutoJailbreak,
         onSetUseSoftReboot = viewModel::setUseSoftReboot,
         onSetDeltaColorVariant = viewModel::setDeltaColorVariant,

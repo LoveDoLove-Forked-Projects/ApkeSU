@@ -34,6 +34,7 @@ import me.weishu.kernelsu.ui.component.material.SegmentedColumn
 import me.weishu.kernelsu.ui.component.material.SegmentedRadioItem
 import me.weishu.kernelsu.ui.navigation3.LocalNavigator
 import me.weishu.kernelsu.ui.util.AppLanguageManager
+import me.weishu.kernelsu.ui.webmanager.ManagerAppSettingsStore
 import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.IconButton
 import top.yukonga.miuix.kmp.basic.Scaffold
@@ -80,6 +81,7 @@ fun LanguageSettingsScreen() {
                             }
                             saveError = null
                             selectedLanguage = language
+                            ManagerAppSettingsStore.exportToRootAsync(context)
                             if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
                                 activity?.recreate()
                             }

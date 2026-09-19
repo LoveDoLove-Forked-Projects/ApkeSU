@@ -17,6 +17,10 @@ mod android {
     pub const WEB_MANAGER_STATE_PATH: &str = concatcp!(WEB_MANAGER_DIR, "state.json");
     pub const WEB_MANAGER_LOCK_PATH: &str = concatcp!(WEB_MANAGER_DIR, "server.lock");
     pub const WEB_MANAGER_STOP_PATH: &str = concatcp!(WEB_MANAGER_DIR, ".stop");
+    pub const WEB_MANAGER_ASSET_DIR: &str = concatcp!(WEB_MANAGER_DIR, "assets/");
+    pub const WEB_MANAGER_ASSET_META_PATH: &str = concatcp!(WEB_MANAGER_DIR, "assets.json");
+    pub const WEB_MANAGER_APP_SETTINGS_PATH: &str =
+        concatcp!(WORKING_DIR, "web_manager_app_settings.json");
 
     pub const PROFILE_DIR: &str = concatcp!(WORKING_DIR, "profile/");
     pub const PROFILE_SELINUX_DIR: &str = concatcp!(PROFILE_DIR, "selinux/");

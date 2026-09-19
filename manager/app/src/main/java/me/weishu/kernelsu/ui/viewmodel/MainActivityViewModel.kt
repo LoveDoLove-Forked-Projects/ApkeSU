@@ -6,9 +6,12 @@ import android.util.Log
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
 import me.weishu.kernelsu.data.repository.SettingsRepository
 import me.weishu.kernelsu.data.repository.SettingsRepositoryImpl
 import me.weishu.kernelsu.ksuApp
@@ -82,6 +85,8 @@ import me.weishu.kernelsu.ui.util.DEFAULT_CUSTOM_WALLPAPER_PASSTHROUGH_OPACITY
 import me.weishu.kernelsu.ui.util.CUSTOM_BACKGROUND_MUSIC_URI_KEY
 import me.weishu.kernelsu.ui.util.CUSTOM_BACKGROUND_MUSIC_VOLUME_KEY
 import me.weishu.kernelsu.ui.util.CUSTOM_CLICK_SOUND_VOLUME_KEY
+import me.weishu.kernelsu.stealth.STEALTH_MODE_ENABLED_KEY
+import me.weishu.kernelsu.stealth.StealthModeStore
 
 class MainActivityViewModel(
     savedStateHandle: SavedStateHandle,
@@ -91,6 +96,8 @@ class MainActivityViewModel(
     private val settingRepo: SettingsRepository = SettingsRepositoryImpl()
     private val componentStyleStore = ComponentStyleStore(ksuApp)
     private val mainPageState = MainPageState(savedStateHandle)
+    @Volatile
+    private var stealthModeResolved = false
     private val listener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
         if (key == null || key in observedKeys) {
             _uiState.value = readUiStateSafely()
@@ -103,6 +110,7 @@ class MainActivityViewModel(
 
     init {
         prefs.registerOnSharedPreferenceChangeListener(listener)
+        resolveStealthModeFromRoot()
     }
 
     override fun onCleared() {
@@ -179,6 +187,8 @@ class MainActivityViewModel(
             customBackgroundMusicVolume = settingRepo.customBackgroundMusicVolume,
             customNavigationIcons = settingRepo.customNavigationIcons,
             deltaColorVariant = settingRepo.deltaColorVariant,
+            stealthModeEnabled = StealthModeStore.isEnabled(),
+            stealthModeResolved = stealthModeResolved,
         )
     }
 
@@ -242,11 +252,35 @@ class MainActivityViewModel(
             customBackgroundMusicVolume = DEFAULT_CUSTOM_BACKGROUND_MUSIC_VOLUME,
             customNavigationIcons = CustomNavigationIconSet(),
             deltaColorVariant = DeltaColorVariant.DEFAULT_VALUE,
+            stealthModeEnabled = StealthModeStore.isEnabled(),
+            stealthModeResolved = stealthModeResolved,
         )
+    }
+
+    private fun resolveStealthModeFromRoot() {
+        viewModelScope.launch(Dispatchers.IO) {
+            var resolved = false
+            for (attempt in 0 until STEALTH_ROOT_READ_ATTEMPTS) {
+                if (StealthModeStore.reconcileFromRoot().isSuccess) {
+                    resolved = true
+                    break
+                }
+                if (attempt < STEALTH_ROOT_READ_ATTEMPTS - 1) {
+                    delay(STEALTH_ROOT_READ_RETRY_MILLIS)
+                }
+            }
+            if (!resolved) {
+                Log.w(TAG, "root stealth state unavailable; using persisted local state")
+            }
+            stealthModeResolved = true
+            _uiState.value = readUiStateSafely()
+        }
     }
 
     private companion object {
         private const val TAG = "MainActivityViewModel"
+        private const val STEALTH_ROOT_READ_ATTEMPTS = 4
+        private const val STEALTH_ROOT_READ_RETRY_MILLIS = 250L
 
         val observedKeys = buildSet {
             add(THEME_SYNC_STRATEGY_KEY)
@@ -314,6 +348,7 @@ class MainActivityViewModel(
                 add(slot.cropBottomKey)
             }
             addAll(CUSTOM_PAGE_BACKGROUND_PREFERENCE_KEYS)
+            add(STEALTH_MODE_ENABLED_KEY)
         }
     }
 }

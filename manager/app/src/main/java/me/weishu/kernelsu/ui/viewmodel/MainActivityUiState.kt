@@ -81,4 +81,6 @@ data class MainActivityUiState(
     val customBackgroundMusicVolume: Float,
     val customNavigationIcons: CustomNavigationIconSet,
     val deltaColorVariant: String,
+    val stealthModeEnabled: Boolean = false,
+    val stealthModeResolved: Boolean = false,
 )

@@ -20,15 +20,15 @@ private const val WEB_MANAGER_PAGE_HEAD: String = """<!doctype html>
 :root[data-theme=dark]{color-scheme:dark}
 :root[data-theme=light]{color-scheme:light}
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
-html,body{margin:0;padding:0}
+html,body{width:100%;max-width:100%;margin:0;padding:0;overflow-x:hidden}
 body{background:var(--bg);color:var(--ink);font:15px/1.5 system-ui,-apple-system,"Segoe UI","Noto Sans SC",sans-serif;padding-bottom:calc(66px + env(safe-area-inset-bottom))}
 .hidden{display:none!important}
 button,input,select,textarea{font:inherit;color:inherit}
 a{color:var(--accent)}
-.wrap{max-width:900px;margin:0 auto;padding:0 14px}
+.wrap{max-width:1100px;margin:0 auto;padding:0 14px}
 /* 顶栏 */
 .topbar{position:sticky;top:0;z-index:20;background:color-mix(in srgb,var(--bg) 88%,transparent);backdrop-filter:blur(12px);border-bottom:1px solid var(--line)}
-.topbar-inner{max-width:900px;margin:0 auto;padding:11px 14px;display:flex;align-items:center;gap:10px;overflow:hidden}
+.topbar-inner{max-width:1100px;margin:0 auto;padding:11px max(14px,env(safe-area-inset-right)) 11px max(14px,env(safe-area-inset-left));display:flex;align-items:center;gap:10px;overflow:hidden}
 .logo{width:34px;height:34px;flex:none;border-radius:10px;background:var(--accent);color:var(--accent-ink);display:grid;place-items:center;font-weight:800;font-size:17px}
 .brand{min-width:0;flex:1 1 auto;overflow:hidden}
 .brand b{display:block;font-size:16px;font-weight:700;line-height:1.2;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -38,11 +38,16 @@ a{color:var(--accent)}
 .pill.ok{background:var(--ok-soft);color:var(--ok)}
 .pill.warn{background:var(--warn-soft);color:var(--warn)}
 .pill.err{background:var(--danger-soft);color:var(--danger)}
-.iconbtn{width:36px;height:36px;flex:none;border:1px solid var(--line);border-radius:10px;background:var(--card);display:grid;place-items:center;cursor:pointer;font-size:16px;line-height:1}
+.iconbtn{width:44px;height:44px;flex:none;border:1px solid var(--line);border-radius:10px;background:var(--card);display:grid;place-items:center;cursor:pointer;font-size:16px;line-height:1}
+.iconbtn svg{width:22px;height:22px;fill:none;stroke:currentColor;stroke-width:1.9;stroke-linecap:round;stroke-linejoin:round}
 .iconbtn:active{background:var(--card-2)}
+.top-action{min-width:44px;min-height:44px;padding:0 10px;border:1px solid var(--line);border-radius:10px;background:var(--card);color:var(--accent);display:inline-flex;align-items:center;justify-content:center;gap:6px;font-size:12px;font-weight:700;cursor:pointer;white-space:nowrap}
+.top-action svg{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:1.9;stroke-linecap:round;stroke-linejoin:round}
+.top-action:active{background:var(--accent-soft)}
+body:not([data-current-view=home]) #susfsShortcut{display:none}
 /* 桌面标签 / 移动底部导航 */
-.tabs{display:none;gap:6px;max-width:900px;margin:0 auto;padding:10px 14px 0}
-.tab{padding:8px 14px;border:1px solid transparent;border-radius:999px;background:transparent;color:var(--muted);font-weight:600;cursor:pointer}
+.tabs{display:none;gap:6px;max-width:1100px;margin:0 auto;padding:10px 14px 0}
+.tab{padding:8px 14px;border:1px solid transparent;border-radius:999px;background:transparent;color:var(--muted);font-weight:600;cursor:pointer;display:inline-flex;align-items:center;gap:6px}
 .tab.active{background:var(--card);border-color:var(--line);color:var(--ink)}
 .tab-count{display:inline-block;min-width:18px;margin-left:5px;padding:0 5px;border-radius:999px;background:var(--card-2);color:var(--muted);font-size:11px;font-weight:700;line-height:17px;text-align:center}
 .navbar{position:fixed;left:0;right:0;bottom:0;z-index:30;display:grid;grid-template-columns:repeat(5,1fr);background:color-mix(in srgb,var(--bg) 92%,transparent);backdrop-filter:blur(12px);border-top:1px solid var(--line);padding-bottom:env(safe-area-inset-bottom)}
@@ -67,7 +72,8 @@ h2{font-size:15px;margin:0}
 .card-bg-host.light-text .info-row{border-top-color:rgba(255,255,255,.22)}
 .card-bg-host.light-text .info-row:first-child{border-top-color:transparent}
 .card-bg-host.light-text .btn{background:rgba(255,255,255,.16);border-color:transparent;color:#fff}
-.navbar button.custom-icon .ico{background-repeat:no-repeat;background-position:center;background-size:contain;font-size:0;color:transparent;width:18px;height:18px}
+.custom-icon .ico{position:relative;width:18px;height:18px;overflow:hidden;font-size:0;color:transparent}
+.custom-icon .ico:before{content:"";position:absolute;inset:0;background-image:var(--nav-image);background-repeat:no-repeat;background-position:center;background-size:contain;transform:translate(var(--nav-offset-x,0),var(--nav-offset-y,0)) scale(var(--nav-scale,1));transform-origin:center}
 /* 设置页分类（与原生设置的分类一致） */
 details.cat{margin:0 0 16px}
 details.cat>summary{display:flex;align-items:center;gap:8px;cursor:pointer;list-style:none;padding:4px 2px 10px;font-size:13.5px;font-weight:700;color:var(--muted)}
@@ -87,10 +93,14 @@ details.cat>summary::after{content:"";flex:1 1 auto;height:1px;background:var(--
 .tool-target{width:100%;box-sizing:border-box}
 .asset-thumb{width:44px;height:28px;flex:none;object-fit:cover;border-radius:7px;border:1px solid var(--line);background:var(--card-2)}
 .asset-thumb.empty{display:grid;place-items:center;font-size:11px;color:var(--muted)}
-.asset-preview{width:100%;max-height:150px;object-fit:cover;border-radius:11px;border:1px solid var(--line);margin-bottom:10px}
-.asset-icon-preview{display:grid;place-items:center;gap:6px;padding:12px;margin-bottom:10px;border-radius:11px;background:var(--card-2)}
-.asset-icon-preview img{width:42px;height:42px;object-fit:contain}
-.asset-icon-preview .ico-fallback{font-size:28px}
+.asset-crop-preview{position:relative;overflow:hidden;margin-bottom:10px;border-radius:11px;background:var(--card-2)}
+.asset-crop-preview.wallpaper{width:100%;aspect-ratio:16/7}
+.asset-crop-preview.icon{width:112px;height:112px;margin-inline:auto}
+.asset-crop-image,.asset-crop-dim,.asset-crop-frame{position:absolute;inset:0;pointer-events:none}
+.asset-crop-image{background-position:center;background-repeat:no-repeat;background-size:cover}
+.asset-crop-image.icon{background-size:contain;transform-origin:center}
+.asset-crop-dim{z-index:1;background:#000}
+.asset-crop-frame{z-index:2;border:1px solid color-mix(in srgb,var(--ink) 38%,transparent);border-radius:inherit;box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--card) 45%,transparent)}
 .field{display:flex;align-items:center;gap:8px;margin:8px 0}
 .field span{flex:none;width:74px;font-size:12.5px;color:var(--muted)}
 .field input[type=range]{flex:1 1 auto;min-width:0}
@@ -161,7 +171,10 @@ select{min-height:40px;padding:8px 10px;border:1px solid var(--line);border-radi
 .item-title{display:flex;align-items:center;gap:8px;font-weight:650;font-size:15px}
 .item-title .name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .item-meta{margin-top:4px;display:flex;flex-wrap:wrap;align-items:center;gap:7px;color:var(--muted);font-size:12px}
-.item-meta .mono{overflow-wrap:anywhere}
+.item-meta .mono{min-width:0;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.superuser-item{width:100%;min-width:0;display:grid;grid-template-columns:42px minmax(0,1fr) auto;align-items:center;overflow:hidden}
+.superuser-item .item-main{min-width:0;max-width:100%}
+.superuser-item .item-actions{width:auto;min-width:46px;margin:0;justify-content:flex-end}
 .item-desc{margin-top:6px;color:var(--muted);font-size:12.5px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
 .tag{padding:2px 8px;border-radius:999px;background:var(--card-2);color:var(--muted);font-size:11px;font-weight:700;white-space:nowrap}
 .tag.ok{background:var(--ok-soft);color:var(--ok)}
@@ -211,8 +224,14 @@ input[type=checkbox]:focus-visible{outline:2px solid var(--accent);outline-offse
   body{padding-bottom:24px}
   .navbar{display:none}
   .tabs{display:flex}
-  .topbar-inner,.wrap{max-width:860px}
+  .topbar-inner,.tabs,.wrap{max-width:1100px}
   .view{padding:16px 0 24px}
+  #view-home:not(.hidden){display:grid;grid-template-columns:minmax(0,.9fr) minmax(0,1.1fr);gap:14px;align-items:start}
+  #homeSub{grid-column:1/-1;grid-row:1;margin-bottom:0}
+  #authBanner{grid-column:1/-1;grid-row:2;margin-bottom:0}
+  #lkmCard{grid-column:1;grid-row:3;margin-bottom:0}
+  #view-home>.metrics{grid-column:1;grid-row:4;margin-bottom:0}
+  #infoCard{grid-column:2;grid-row:3/span 2;margin-bottom:0}
   .search{flex:1 1 220px}
   .row-main{flex:1 1 auto}
   .item{flex-wrap:nowrap;align-items:center}
@@ -235,17 +254,18 @@ private const val WEB_MANAGER_PAGE_MARKUP: String = """
     <div class="logo" aria-hidden="true">A</div>
     <div class="brand"><b>ApkeSU（web）</b><span id="brandSub">本机控制台 · 仅回环访问</span></div>
     <span id="statusPill" class="pill">读取中</span>
-    <button id="rebootMenu" class="iconbtn" type="button" title="重启菜单" aria-label="打开重启菜单">⏻</button>
-    <button id="refreshAll" class="iconbtn" type="button" title="刷新数据" aria-label="刷新数据">⟳</button>
+    <button id="susfsShortcut" class="top-action hidden" type="button" title="打开 GKI SUSFS 管理" aria-label="打开 GKI SUSFS 管理"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 5.5 5.7v5.8c0 4.2 2.6 7.7 6.5 9.5 3.9-1.8 6.5-5.3 6.5-9.5V5.7L12 3Z"/><path d="M9.2 12.1 11 14l3.9-4.2"/></svg><span>SUSFS</span></button>
+    <button id="rebootMenu" class="iconbtn" type="button" title="重启菜单" aria-label="打开重启菜单"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2.8v8.4"/><path d="M6.4 6.4a8 8 0 1 0 11.2 0"/></svg></button>
+    <button id="refreshAll" class="iconbtn" type="button" title="刷新数据" aria-label="刷新数据"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 6v5h-5"/><path d="M19 11a7.5 7.5 0 1 0 .3 3"/></svg></button>
   </div>
 </header>
 
 <nav class="tabs" id="desktopTabs" aria-label="页面导航">
-  <button class="tab active" type="button" data-view="home">主页</button>
-  <button class="tab" type="button" data-view="superuser">超级用户<span class="tab-count" id="tabSuperuser">-</span></button>
-  <button class="tab" type="button" data-view="modules">模块<span class="tab-count" id="tabModules">-</span></button>
-  <button class="tab" type="button" data-view="kpm">KPM<span class="tab-count" id="tabKpm">-</span></button>
-  <button class="tab" type="button" data-view="settings">设置</button>
+  <button class="tab active" type="button" data-view="home"><span class="ico" aria-hidden="true">⌂</span>主页</button>
+  <button class="tab" type="button" data-view="superuser"><span class="ico" aria-hidden="true">✓</span>超级用户<span class="tab-count" id="tabSuperuser">-</span></button>
+  <button class="tab" type="button" data-view="modules"><span class="ico" aria-hidden="true">▤</span>模块<span class="tab-count" id="tabModules">-</span></button>
+  <button class="tab" type="button" data-view="kpm"><span class="ico" aria-hidden="true">◇</span>KPM<span class="tab-count" id="tabKpm">-</span></button>
+  <button class="tab" type="button" data-view="settings"><span class="ico" aria-hidden="true">⚙</span>设置</button>
 </nav>
 
 <main class="wrap">
@@ -399,6 +419,8 @@ private const val WEB_MANAGER_PAGE_MARKUP: String = """
         <div class="row"><div class="row-main"><div class="row-title">运行时长</div><div class="row-detail" id="settingsUptime">读取中</div></div></div>
         <div class="row"><div class="row-main"><div class="row-title">接口版本</div><div class="row-detail" id="settingsApi">-</div></div></div>
         <div class="row"><div class="row-main"><div class="row-title">自动刷新</div><div class="row-detail">每 10 秒刷新状态与模块数据</div></div><input id="autoRefreshToggle" type="checkbox" aria-label="自动刷新"></div>
+        <div class="row"><div class="row-main"><div class="row-title">隐身模式</div><div class="row-detail" id="stealthDetail">读取中</div></div><input id="stealthToggle" type="checkbox" aria-label="隐身模式"></div>
+        <div class="row"><div class="row-main"><div class="row-title">隐身密令</div><div class="row-detail mono" id="stealthCodeDetail">默认 *#*#4211#*#*</div></div><button class="btn small" type="button" id="stealthCodeEdit">设置密令</button></div>
       </div>
       <div class="card">
         <div class="row">
@@ -420,6 +442,21 @@ private const val WEB_MANAGER_PAGE_MARKUP: String = """
         <div class="row"><div class="row-main"><div class="row-title">访问地址</div><div class="row-detail mono" id="settingsAddress">-</div></div><button class="btn small" type="button" id="copyAddress">复制</button></div>
         <div class="row"><div class="row-main"><div class="row-title">清空缓存</div><div class="row-detail">重新读取模块、授权与设备数据</div></div><button class="btn small" type="button" id="clearCache">执行</button></div>
       </div>
+    </details>
+
+    <details class="cat" open>
+      <summary>软件管理器</summary>
+      <div class="card">
+        <div class="row"><div class="row-main"><div class="row-title">语言</div><div class="row-detail">选择整个应用使用的界面语言</div></div><select id="languageSelect" aria-label="软件管理器语言"><option value="">读取中</option></select></div>
+        <div class="row"><div class="row-main"><div class="row-title">检查模块更新</div><div class="row-detail">自动检查已安装模块是否有可用更新</div></div><input id="managerCheckModuleUpdate" type="checkbox" data-manager-setting="checkModuleUpdate" aria-label="检查模块更新"></div>
+        <div class="row"><div class="row-main"><div class="row-title">版本不匹配警告</div><div class="row-detail">管理器与 ApkeSU 驱动版本不匹配时显示警告</div></div><input id="managerVersionWarning" type="checkbox" data-manager-setting="showVersionMismatchWarning" aria-label="版本不匹配警告"></div>
+        <div class="row"><div class="row-main"><div class="row-title">显示 GKI 测试提示</div><div class="row-detail">在首页显示 GKI 工作模式仅建议测试使用的提醒</div></div><input id="managerGkiWarning" type="checkbox" data-manager-setting="showGkiWarning" aria-label="显示 GKI 测试提示"></div>
+        <div class="row"><div class="row-main"><div class="row-title">显示支持开发卡片</div><div class="row-detail">在主页显示支持开发卡片</div></div><input id="managerSupportCard" type="checkbox" data-manager-setting="showHomeSupportCard" aria-label="显示支持开发卡片"></div>
+        <div class="row"><div class="row-main"><div class="row-title">显示了解 ApkeSU 卡片</div><div class="row-detail">在主页显示了解 ApkeSU 卡片</div></div><input id="managerLearnCard" type="checkbox" data-manager-setting="showHomeLearnCard" aria-label="显示了解 ApkeSU 卡片"></div>
+        <div class="row"><div class="row-main"><div class="row-title">动态管理器</div><div class="row-detail" id="dynamicManagerDetail">读取中</div></div><button class="btn small" type="button" id="dynamicManagerOpen">管理</button></div>
+        <div class="row"><div class="row-main"><div class="row-title">自定义主页顶部名称</div><div class="row-detail" id="managerHomeTitleDetail">当前跟随默认名称</div></div><button class="btn small" type="button" id="managerHomeTitleEdit">修改</button></div>
+      </div>
+      <div id="managerSettingsError" class="notice warn hidden"><span></span></div>
     </details>
 
     <details class="cat">
@@ -455,12 +492,6 @@ private const val WEB_MANAGER_PAGE_MARKUP: String = """
           <button class="btn small" type="button" id="refreshFeaturesRoot">刷新</button>
         </div>
         <div id="featureRowsRoot"><div class="state">读取中……</div></div>
-      </div>
-      <div class="card">
-        <div class="row">
-          <div class="row-main"><div class="row-title">管理器语言</div><div class="row-detail">原生管理器的界面语言（网页管理器固定中文）</div></div>
-          <select id="languageSelect" aria-label="管理器语言"><option value="">读取中</option></select>
-        </div>
       </div>
       <div class="card">
         <div class="row">
@@ -599,6 +630,8 @@ private const val WEB_MANAGER_PAGE_SCRIPT_HEAD: String = """<script>
     kpmControlTarget: null,
     kpmPendingFile: null,
     theme: "auto",
+    stealth: { enabled: false, code: "*#*#4211#*#*" },
+    managerSettings: null,
     features: [],
     featuresLoaded: false,
     assets: { wallpapers: {}, navIcons: {}, moduleWallpapers: {} },
@@ -760,6 +793,7 @@ private const val WEB_MANAGER_PAGE_SCRIPT_HEAD: String = """<script>
     el("kernelSub").textContent = "已安装版本：" +
       (driverVersion > 0 ? shortVersion(driverVersion) + (kernelUapi > 0 ? "-" + kernelUapi : "") : mode.text) +
       (versionMismatch ? "（与当前管理器 " + managerCode + " 不一致）" : "");
+    el("susfsShortcut").classList.toggle("hidden", kernel.mode !== "gki" || driverVersion <= 0);
 
     // 卡片只保留状态 / 模式标签 / 已安装版本；内核与 KMI 细节放到下方「设备信息」里
 
@@ -1040,24 +1074,25 @@ private const val WEB_MANAGER_PAGE_SCRIPT_HEAD: String = """<script>
   }
 
   function applyNavIcon(slot) {
-    var button = document.querySelector('.navbar button[data-view="' + (NAV_ICON_VIEWS[slot] || slot) + '"]');
-    if (!button) return;
-    var icon = button.querySelector(".ico");
-    if (!icon) return;
     var meta = assetMeta("navicon", slot);
-    if (!meta) {
-      button.classList.remove("custom-icon");
-      icon.style.backgroundImage = "";
-      icon.style.width = "";
-      icon.style.height = "";
-      icon.style.transform = "";
-      return;
-    }
-    button.classList.add("custom-icon");
-    icon.style.backgroundImage = 'url("' + assetUrl("navicon", slot) + '")';
-    icon.style.width = (18 * (meta.scale || 1)).toFixed(1) + "px";
-    icon.style.height = (18 * (meta.scale || 1)).toFixed(1) + "px";
-    icon.style.transform = "translateY(" + (meta.offsetY || 0) + "px)";
+    var view = NAV_ICON_VIEWS[slot] || slot;
+    document.querySelectorAll('.navbar button[data-view="' + view + '"], .tabs button[data-view="' + view + '"]').forEach(function (button) {
+      var icon = button.querySelector(".ico");
+      if (!icon) return;
+      if (!meta) {
+        button.classList.remove("custom-icon");
+        icon.style.removeProperty("--nav-image");
+        icon.style.removeProperty("--nav-scale");
+        icon.style.removeProperty("--nav-offset-x");
+        icon.style.removeProperty("--nav-offset-y");
+        return;
+      }
+      button.classList.add("custom-icon");
+      icon.style.setProperty("--nav-image", 'url("' + assetUrl("navicon", slot) + '")');
+      icon.style.setProperty("--nav-scale", String(meta.scale || 1));
+      icon.style.setProperty("--nav-offset-x", String(meta.offsetX || 0) + "px");
+      icon.style.setProperty("--nav-offset-y", String(meta.offsetY || 0) + "px");
+    });
   }
 
   function applyAssets() {
@@ -1074,11 +1109,11 @@ private const val WEB_MANAGER_PAGE_SCRIPT_HEAD: String = """<script>
     var targets = catalog.wallpaperTargets || {};
     var slots = catalog.navIconSlots || {};
     var wallpapers = Object.keys(targets).map(function (key) {
-      return assetRow("wallpaper", key, targets[key], "缩放 / 平移 / 变暗 / 模糊");
+      return assetRow("wallpaper", key, targets[key], "裁剪 / 缩放 / 移动 / 变暗 / 模糊");
     }).join("");
     el("wallpaperRows").innerHTML = wallpapers || '<div class="state">没有可配置的卡片</div>';
     var icons = Object.keys(slots).map(function (key) {
-      return assetRow("navicon", key, slots[key], "大小 / 垂直偏移");
+      return assetRow("navicon", key, slots[key], "方形裁剪 / 缩放 / 水平与垂直移动");
     }).join("");
     el("navIconRows").innerHTML = icons || '<div class="state">没有可配置的图标</div>';
   }
@@ -1096,7 +1131,7 @@ private const val WEB_MANAGER_PAGE_SCRIPT_HEAD: String = """<script>
       '<div class="row-actions">' +
       '<button class="btn small" type="button" data-asset-pick="' + key + '">选择图片</button>' +
       (meta
-        ? '<button class="btn small" type="button" data-asset-adjust="' + key + '">调整</button>' +
+        ? '<button class="btn small" type="button" data-asset-adjust="' + key + '">裁剪</button>' +
           '<button class="btn small danger" type="button" data-asset-clear="' + key + '">清除</button>'
         : '') +
       '</div></div>';
@@ -1126,6 +1161,7 @@ private const val WEB_MANAGER_PAGE_SCRIPT_HEAD: String = """<script>
       return loadSettings().then(function () {
         // 模块卡片壁纸：按钮状态（换壁纸/调整/清除）要跟着列表一起刷新
         if (kind === "modulewall") renderModules();
+        openAssetAdjust(kind + "/" + name);
         return name;
       });
     }).catch(function (error) {
@@ -1162,37 +1198,42 @@ private const val WEB_MANAGER_PAGE_SCRIPT_HEAD: String = """<script>
     var kind = parts[0], name = parts[1];
     var meta = assetMeta(kind, name) || {};
     state.assetAdjustTarget = { kind: kind, name: name };
-    var body, foot = '<button class="btn small primary" type="button" id="assetAdjustApply">保存</button>' +
+    var imageUrl = assetUrl(kind, name);
+    var body, foot = '<button class="btn small primary" type="button" id="assetAdjustApply">保存裁剪</button>' +
       '<button class="btn small" type="button" data-kpm-dialog="close">关闭</button>';
     if (kind !== "navicon") {
-      body = '<img class="asset-preview" alt="" src="' + assetUrl(kind, name) + '">' +
-        '<label class="field"><span>适应方式</span><select id="assetFit">' +
-        '<option value="cover">填充（裁切）</option>' +
-        '<option value="contain">适应（留白）</option>' +
+      body = '<div class="asset-crop-preview wallpaper"><span id="assetCropImage" class="asset-crop-image" style="background-image:url(\'' + imageUrl + '\')"></span>' +
+        '<span id="assetCropDim" class="asset-crop-dim"></span><span class="asset-crop-frame"></span></div>' +
+        '<label class="field"><span>填充方式</span><select id="assetFit">' +
+        '<option value="cover">填充裁剪</option>' +
+        '<option value="contain">完整显示</option>' +
         '<option value="stretch">拉伸</option></select></label>' +
-        assetFieldRange("assetScale", "缩放", 50, 300, 5, Math.round((meta.scale || 1) * 100), "%") +
-        assetFieldRange("assetOffsetX", "水平偏移", -50, 50, 1, Math.round(meta.offsetX || 0), "%") +
-        assetFieldRange("assetOffsetY", "垂直偏移", -50, 50, 1, Math.round(meta.offsetY || 0), "%") +
+        assetFieldRange("assetScale", "裁剪缩放", 50, 300, 5, Math.round((meta.scale || 1) * 100), "%") +
+        assetFieldRange("assetOffsetX", "水平移动", -50, 50, 1, Math.round(meta.offsetX || 0), "%") +
+        assetFieldRange("assetOffsetY", "垂直移动", -50, 50, 1, Math.round(meta.offsetY || 0), "%") +
         assetFieldRange("assetDim", "变暗", 0, 85, 5, Math.round((meta.dim === undefined ? 0.35 : meta.dim) * 100), "%") +
         assetFieldRange("assetBlur", "模糊", 0, 12, 1, Math.round(meta.blur || 0), "px");
-      openSheet("调整壁纸 · " + assetLabel(kind, name), body, foot);
+      openSheet("裁剪壁纸 · " + assetLabel(kind, name), body, foot);
       el("assetFit").value = meta.fit || "cover";
     } else {
-      body = '<div class="asset-icon-preview"><img alt="" src="' + assetUrl(kind, name) + '"></div>' +
-        assetFieldRange("assetScale", "大小", 50, 180, 5, Math.round((meta.scale || 1) * 100), "%") +
-        assetFieldRange("assetOffsetY", "垂直偏移", -8, 8, 1, Math.round(meta.offsetY || 0), "px");
-      openSheet("调整图标 · " + assetLabel(kind, name), body, foot);
+      body = '<div class="asset-crop-preview icon"><span id="assetCropImage" class="asset-crop-image icon" style="background-image:url(\'' + imageUrl + '\')"></span></div>' +
+        assetFieldRange("assetScale", "缩放", 50, 300, 5, Math.round((meta.scale || 1) * 100), "%") +
+        assetFieldRange("assetOffsetX", "水平移动", -12, 12, 1, Math.round(meta.offsetX || 0), "px") +
+        assetFieldRange("assetOffsetY", "垂直移动", -12, 12, 1, Math.round(meta.offsetY || 0), "px");
+      openSheet("裁剪图标 · " + assetLabel(kind, name), body, foot);
     }
     ["assetScale", "assetOffsetX", "assetOffsetY", "assetDim", "assetBlur"].forEach(function (id) {
       var input = el(id);
       if (!input) return;
       input.addEventListener("input", function () {
-        el(id + "Value").textContent = input.value + (id === "assetBlur" ? "px" : "%");
+        var unit = id === "assetBlur" || (kind === "navicon" && (id === "assetOffsetX" || id === "assetOffsetY")) ? "px" : "%";
+        el(id + "Value").textContent = input.value + unit;
         previewAssetAdjust();
       });
     });
     var fit = el("assetFit");
     if (fit) fit.addEventListener("change", previewAssetAdjust);
+    previewAssetAdjust();
   }
 
   function assetAdjustMeta() {
@@ -1207,6 +1248,7 @@ private const val WEB_MANAGER_PAGE_SCRIPT_HEAD: String = """<script>
       meta.blur = Number(el("assetBlur").value);
     } else {
       meta.scale = Number(el("assetScale").value) / 100;
+      meta.offsetX = Number(el("assetOffsetX").value);
       meta.offsetY = Number(el("assetOffsetY").value);
     }
     return meta;
@@ -1215,13 +1257,32 @@ private const val WEB_MANAGER_PAGE_SCRIPT_HEAD: String = """<script>
   /** 滑块拖动时立刻在当前页面上预览，保存后才会写回服务端。 */
   function previewAssetAdjust() {
     var target = state.assetAdjustTarget;
-    if (!target || target.kind !== "wallpaper") return;
-    var host = el(WALLPAPER_HOSTS[target.name]);
+    if (!target) return;
+    var meta = assetAdjustMeta();
+    var cropImage = el("assetCropImage");
+    var cropDim = el("assetCropDim");
+    if (target.kind === "navicon") {
+      if (cropImage) cropImage.style.transform = "translate(" + meta.offsetX + "px," + meta.offsetY + "px) scale(" + meta.scale + ")";
+      var view = NAV_ICON_VIEWS[target.name] || target.name;
+      document.querySelectorAll('.navbar button[data-view="' + view + '"] .ico, .tabs button[data-view="' + view + '"] .ico').forEach(function (icon) {
+        icon.style.setProperty("--nav-scale", String(meta.scale));
+        icon.style.setProperty("--nav-offset-x", String(meta.offsetX) + "px");
+        icon.style.setProperty("--nav-offset-y", String(meta.offsetY) + "px");
+      });
+      return;
+    }
+    if (cropImage && cropDim) applyWallpaperStyles(cropImage, cropDim, meta, null);
+    var host = target.kind === "wallpaper" ? el(WALLPAPER_HOSTS[target.name]) : null;
+    if (target.kind === "modulewall") {
+      document.querySelectorAll("article.item[data-module-id]").forEach(function (card) {
+        if (card.getAttribute("data-module-id") === target.name) host = card;
+      });
+    }
     if (!host) return;
     var layer = host.querySelector(".bg-layer");
     var dim = host.querySelector(".bg-dim");
     if (!layer || !dim) return;
-    applyWallpaperStyles(layer, dim, assetAdjustMeta(), null);
+    applyWallpaperStyles(layer, dim, meta, null);
   }
 
   function saveAssetAdjust() {
@@ -1508,12 +1569,15 @@ private const val WEB_MANAGER_PAGE_SCRIPT_HEAD: String = """<script>
 
   function closeSheet() {
     state.rebootMenuRequest += 1;
+    var restoreAssets = state.assetAdjustTarget !== null;
+    state.assetAdjustTarget = null;
     el("kpmDialog").classList.add("hidden");
     el("kpmDialogBody").innerHTML = "";
     el("kpmDialogFoot").innerHTML = "";
     state.kpmControlTarget = null;
     state.kpmRemoveTarget = null;
     state.kpmPendingFile = null;
+    if (restoreAssets) applyAssets();
   }
 
   function openKpmControlDialog(id, name, args) {
@@ -2119,7 +2183,7 @@ private const val WEB_MANAGER_PAGE_SCRIPT_TOOLS: String = """  // --------------
     return '<button class="btn small' + (meta ? " ok" : "") + '" type="button" data-asset-pick="' + esc(key) +
       '">' + (meta ? "换壁纸" : "壁纸") + "</button>" +
       (meta
-        ? '<button class="btn small" type="button" data-asset-adjust="' + esc(key) + '">调整</button>' +
+        ? '<button class="btn small" type="button" data-asset-adjust="' + esc(key) + '">裁剪壁纸</button>' +
           '<button class="btn small danger" type="button" data-asset-clear="' + esc(key) + '">清除壁纸</button>'
         : "");
   }
@@ -2127,6 +2191,218 @@ private const val WEB_MANAGER_PAGE_SCRIPT_TOOLS: String = """  // --------------
 """
 
 private const val WEB_MANAGER_PAGE_SCRIPT_TAIL: String = """
+  var MANAGER_SETTING_INPUTS = {
+    checkModuleUpdate: "managerCheckModuleUpdate",
+    showVersionMismatchWarning: "managerVersionWarning",
+    showGkiWarning: "managerGkiWarning",
+    showHomeSupportCard: "managerSupportCard",
+    showHomeLearnCard: "managerLearnCard"
+  };
+
+  function renderManagerSettings(manager, error) {
+    manager = manager || {};
+    state.managerSettings = manager;
+    Object.keys(MANAGER_SETTING_INPUTS).forEach(function (key) {
+      var input = el(MANAGER_SETTING_INPUTS[key]);
+      if (!input) return;
+      input.checked = manager[key] !== false;
+      input.disabled = false;
+    });
+    var languages = [
+      { tag: "zh-CN", label: "简体中文" }, { tag: "en", label: "English" },
+      { tag: "fr", label: "Français" }, { tag: "ru", label: "Русский" },
+      { tag: "ja", label: "日本語" }, { tag: "ko", label: "한국어" },
+      { tag: "es", label: "Español" }
+    ];
+    renderLanguage({ current: manager.language || "zh-CN", supported: languages });
+    el("managerHomeTitleDetail").textContent = manager.customHomeTitle || "当前跟随默认名称";
+    var errorBox = el("managerSettingsError");
+    errorBox.classList.toggle("hidden", !error);
+    errorBox.querySelector("span").textContent = error || "";
+  }
+
+  function updateManagerSetting(key, value, input) {
+    if (input) input.disabled = true;
+    var payload = {};
+    payload[key] = value;
+    return kpmPost("/api/settings/manager", payload, 30000).then(function (result) {
+      renderManagerSettings(result.manager, "");
+      notify("软件管理器设置已同步");
+      record("软件管理器设置：" + key);
+      return result.manager;
+    }).catch(function (error) {
+      renderManagerSettings(state.managerSettings, error.message || "同步失败");
+      notify("设置同步失败：" + (error.message || "未知错误"), true);
+      throw error;
+    }).finally(function () {
+      if (input) input.disabled = false;
+    });
+  }
+
+  function openManagerHomeTitleEditor() {
+    var title = (state.managerSettings && state.managerSettings.customHomeTitle) || "";
+    openSheet(
+      "自定义主页顶部名称",
+      '<div class="row"><div class="row-main"><div class="row-title">主页顶部名称</div>' +
+        '<div class="row-detail">最多 40 个字符，留空可恢复默认名称。</div></div></div>' +
+        '<input id="managerHomeTitleInput" class="search" style="width:100%;margin-top:10px" type="text" maxlength="40" value="' + esc(title) + '" placeholder="留空则使用默认名称" aria-label="主页顶部名称">',
+      '<button class="btn primary" type="button" id="managerHomeTitleSave">保存</button>' +
+        '<button class="btn" type="button" data-kpm-dialog="close">取消</button>'
+    );
+    el("managerHomeTitleSave").addEventListener("click", function (event) {
+      event.currentTarget.disabled = true;
+      updateManagerSetting("customHomeTitle", el("managerHomeTitleInput").value.trim()).then(function () {
+        closeSheet();
+      }).catch(function () { event.currentTarget.disabled = false; });
+    });
+  }
+
+  function dynamicManagerStatusText(status) {
+    if (!status || status.supported === false) return "当前内核不支持";
+    if (status.active) return "已配置 · 已被内核识别";
+    if (status.configured) return "已配置 · 等待兼容管理器生效";
+    return "未配置";
+  }
+
+  function loadDynamicManagerSummary() {
+    return api("/api/dynamic-manager", { timeout: 15000 }).then(function (data) {
+      el("dynamicManagerDetail").textContent = dynamicManagerStatusText(data.status);
+      return data.status;
+    }).catch(function (error) {
+      el("dynamicManagerDetail").textContent = "读取失败：" + (error.message || "未知错误");
+      throw error;
+    });
+  }
+
+  function openDynamicManagerEditor() {
+    openSheet("动态管理器", '<div class="state">正在读取状态……</div>', '<button class="btn" type="button" data-kpm-dialog="close">关闭</button>');
+    api("/api/dynamic-manager", { timeout: 15000 }).then(function (data) {
+      var status = data.status || {};
+      var disabled = status.supported === false ? " disabled" : "";
+      openSheet(
+        "动态管理器",
+        '<div class="notice' + (status.supported === false ? " warn" : "") + '"><b>' + esc(dynamicManagerStatusText(status)) + '</b><span>' +
+          esc(status.error || "管理当前内核识别的副管理器签名证书。") + '</span></div>' +
+          '<div class="row"><div class="row-main"><div class="row-title">证书大小</div><div class="row-detail">256-4096</div></div>' +
+          '<input id="dynamicManagerSize" class="tool-target" type="number" min="256" max="4096" value="' + esc(status.certificateSize || "") + '"' + disabled + '></div>' +
+          '<div class="row"><div class="row-main"><div class="row-title">证书 SHA-256</div><div class="row-detail">64 位小写十六进制</div></div></div>' +
+          '<input id="dynamicManagerHash" class="search mono" style="width:100%;margin-top:10px" type="text" maxlength="64" value="' + esc(status.certificateSha256 || "") + '"' + disabled + '>',
+        '<button class="btn danger" type="button" id="dynamicManagerClear"' + disabled + '>清除</button>' +
+          '<button class="btn primary" type="button" id="dynamicManagerSave"' + disabled + '>保存</button>' +
+          '<button class="btn" type="button" data-kpm-dialog="close">取消</button>'
+      );
+      if (status.supported === false) return;
+      el("dynamicManagerSave").addEventListener("click", function (event) {
+        var size = Number(el("dynamicManagerSize").value);
+        var hash = el("dynamicManagerHash").value.trim();
+        if (!Number.isInteger(size) || size < 256 || size > 4096 || !/^[0-9a-f]{64}$/.test(hash)) {
+          notify("请输入 256-4096 的证书大小和 64 位小写 SHA-256", true);
+          return;
+        }
+        event.currentTarget.disabled = true;
+        kpmPost("/api/dynamic-manager", { action: "set", certificateSize: size, certificateSha256: hash }, 40000).then(function () {
+          closeSheet();
+          notify("动态管理器证书已保存");
+          return loadDynamicManagerSummary();
+        }).catch(function (error) {
+          notify("动态管理器更新失败：" + (error.message || "未知错误"), true);
+          event.currentTarget.disabled = false;
+        });
+      });
+      el("dynamicManagerClear").addEventListener("click", function (event) {
+        if (!window.confirm("清除动态管理器证书并撤销副管理器？")) return;
+        event.currentTarget.disabled = true;
+        kpmPost("/api/dynamic-manager", { action: "clear" }, 40000).then(function () {
+          closeSheet();
+          notify("动态管理器已清除");
+          return loadDynamicManagerSummary();
+        }).catch(function (error) {
+          notify("动态管理器清除失败：" + (error.message || "未知错误"), true);
+          event.currentTarget.disabled = false;
+        });
+      });
+    }).catch(function (error) {
+      el("kpmDialogBody").innerHTML = '<div class="state">读取失败：' + esc(error.message || "未知错误") + '</div>';
+    });
+  }
+
+  function stealthCodeValid(value) {
+    return /^(?:\d{3,16}|\*#\*#\d{3,16}#\*#\*)$/.test(String(value || "").trim());
+  }
+
+  function openStealthEditor(enableAfterSave) {
+    var code = (state.stealth && state.stealth.code) || "*#*#4211#*#*";
+    var warning = enableAfterSave
+      ? '<div class="notice warn"><b>启用后软件管理器会伪装为未安装</b><span>超级用户、模块、KPM 和设置页面会隐藏。之后只能在网页管理器输入密令或通过拨号密令关闭。</span></div>'
+      : "";
+    openSheet(
+      enableAfterSave ? "启用隐身模式" : "设置隐身密令",
+      warning + '<div class="row"><div class="row-main"><div class="row-title">隐身密令</div>' +
+        '<div class="row-detail">输入 3-16 位数字，或完整的 *#*#数字#*#* 格式。</div></div></div>' +
+        '<input id="stealthCodeInput" class="search mono" style="width:100%;margin-top:10px" type="text" ' +
+        'inputmode="numeric" autocomplete="off" value="' + esc(code) + '" aria-label="隐身密令">',
+      '<button class="btn primary" type="button" id="stealthSave">保存</button>' +
+        '<button class="btn" type="button" data-kpm-dialog="close">取消</button>'
+    );
+    el("stealthSave").addEventListener("click", function () {
+      var input = el("stealthCodeInput");
+      var requestedCode = input.value.trim();
+      if (!stealthCodeValid(requestedCode)) {
+        notify("密令格式无效，请输入 3-16 位数字", true);
+        input.focus();
+        return;
+      }
+      var button = el("stealthSave");
+      button.disabled = true;
+      kpmPost("/api/stealth", {
+        enabled: enableAfterSave || !!state.stealth.enabled,
+        code: requestedCode
+      }, 30000).then(function () {
+        closeSheet();
+        notify(enableAfterSave ? "隐身模式已启用" : "隐身密令已保存");
+        record(enableAfterSave ? "隐身模式：启用" : "隐身密令：更新");
+        return loadSettings();
+      }).catch(function (error) {
+        notify("隐身模式更新失败：" + (error.message || "未知错误"), true);
+        button.disabled = false;
+      });
+    });
+  }
+
+  function openStealthDisableEditor() {
+    openSheet(
+      "关闭隐身模式",
+      '<div class="notice warn"><b>需要验证隐身密令</b><span>请输入启用隐身模式时保存的密令。</span></div>' +
+        '<input id="stealthDisableCode" class="search mono" style="width:100%;margin-top:10px" type="password" ' +
+        'inputmode="numeric" autocomplete="off" value="" aria-label="隐身密令">',
+      '<button class="btn danger" type="button" id="stealthDisable">验证并关闭</button>' +
+        '<button class="btn" type="button" data-kpm-dialog="close">取消</button>'
+    );
+    el("stealthDisableCode").focus();
+    el("stealthDisable").addEventListener("click", function () {
+      var input = el("stealthDisableCode");
+      var code = input.value.trim();
+      if (!stealthCodeValid(code)) {
+        notify("请输入正确格式的隐身密令", true);
+        input.focus();
+        return;
+      }
+      var button = el("stealthDisable");
+      button.disabled = true;
+      kpmPost("/api/stealth", { enabled: false, code: code }, 20000).then(function () {
+        closeSheet();
+        notify("隐身模式已关闭，密令备份仍保留");
+        record("隐身模式：关闭");
+        return loadSettings();
+      }).catch(function (error) {
+        notify("隐身模式关闭失败：" + (error.message || "未知错误"), true);
+        button.disabled = false;
+        input.focus();
+        input.select();
+      });
+    });
+  }
+
   function loadSettings() {
     el("settingsError").classList.add("hidden");
     return api("/api/settings", { timeout: 15000 }).then(function (data) {
@@ -2139,6 +2415,16 @@ private const val WEB_MANAGER_PAGE_SCRIPT_TAIL: String = """
       el("themeSelect").value = state.theme;
       renderLauncher(data.launcher);
       renderPortSettings(data);
+      var stealth = data.stealth || {};
+      state.stealth = stealth;
+      el("stealthDetail").textContent = stealth.enabled
+        ? "已启用 · 软件管理器主页伪装为未安装"
+        : "未启用" + (stealth.codeBackedUp ? " · 密令备份仍保留" : "");
+      el("stealthToggle").checked = !!stealth.enabled;
+      el("stealthToggle").disabled = false;
+      el("stealthCodeDetail").textContent = stealth.code || "*#*#4211#*#*";
+      renderManagerSettings(data.manager, data.managerSettingsError || "");
+      loadDynamicManagerSummary().catch(function () { /* 行内已提示 */ });
       state.assets = data.assets || { wallpapers: {}, navIcons: {} };
       state.assetCatalog = data.assetCatalog || state.assetCatalog;
       applyAssets();
@@ -2213,10 +2499,10 @@ private const val WEB_MANAGER_PAGE_SCRIPT_TAIL: String = """
       if (app.userId) tags.push('<span class="tag">用户 ' + Number(app.userId) + "</span>");
       var action = app.manageable === false
         ? '<span class="tag">不可修改</span>'
-        : '<button class="btn small' + (app.allowSu ? " danger" : " primary") + '" type="button" data-app-uid="' +
-          esc(app.uid) + '" data-action="' + (app.allowSu ? "revoke" : "grant") + '"' + busy + ">" +
-          (app.allowSu ? "撤销" : "允许") + "</button>";
-      return '<article class="item">' +
+        : '<input type="checkbox" data-app-uid="' + esc(app.uid) + '"' +
+          (app.allowSu ? " checked" : "") + busy +
+          ' aria-label="' + (app.allowSu ? "关闭" : "开启") + " " + esc(app.label) + ' 的 Root 权限">';
+      return '<article class="item superuser-item">' +
         '<span class="av">' + esc((String(app.label || app.packageName || "?").trim()[0] || "?").toUpperCase()) +
         '<img class="img" alt="" loading="lazy" src="' + PREFIX + "/api/icon/" + encodeURIComponent(app.packageName) + '"></span>' +
         '<div class="item-main"><div class="item-title"><span class="name">' + esc(app.label) + "</span>" +
@@ -2231,7 +2517,10 @@ private const val WEB_MANAGER_PAGE_SCRIPT_TAIL: String = """
   function changeSuperuser(uid, action) {
     var key = "su:" + uid;
     if (state.busy[key]) return;
-    if (!window.confirm(action === "grant" ? "允许该应用使用 Root？" : "撤销该应用的 Root 权限？")) return;
+    if (action === "revoke" && !window.confirm("关闭该应用的 Root 权限？")) {
+      renderSuperusers();
+      return;
+    }
     state.busy[key] = true;
     renderSuperusers();
     api("/api/superuser/" + encodeURIComponent(uid) + "/" + action, { method: "POST", timeout: 60000 })
@@ -2243,6 +2532,7 @@ private const val WEB_MANAGER_PAGE_SCRIPT_TAIL: String = """
       .catch(function (error) {
         notify(error.message, true);
         record("授权操作失败：" + error.message, true);
+        renderSuperusers();
       })
       .finally(function () {
         delete state.busy[key];
@@ -2631,10 +2921,24 @@ private const val WEB_MANAGER_PAGE_SCRIPT_TAIL: String = """
     }
   }
 
+  function openNativeSusfsManager() {
+    var button = el("susfsShortcut");
+    button.disabled = true;
+    kpmPost("/api/tools/native-susfs", {}, 20000).then(function (data) {
+      var url = String(data.url || "");
+      if (!url) throw new Error("ksud 网页管理器没有返回访问地址");
+      window.location.assign(url + "#susfs");
+    }).catch(function (error) {
+      notify("无法打开 SUSFS 管理：" + (error.message || "未知错误"), true);
+      button.disabled = false;
+    });
+  }
+
   // ------------------------------------------------------------------- 视图
 
   function setView(view, push) {
     state.view = view;
+    document.body.dataset.currentView = view;
     ["home", "superuser", "modules", "kpm", "settings"].forEach(function (name) {
       el("view-" + name).classList.toggle("hidden", name !== view);
     });
@@ -2885,6 +3189,17 @@ private const val WEB_MANAGER_PAGE_SCRIPT_TAIL: String = """
         return loadSettings();
       });
     });
+    el("stealthToggle").addEventListener("change", function (event) {
+      var input = event.target;
+      if (input.checked) {
+        input.checked = false;
+        openStealthEditor(true);
+        return;
+      }
+      input.checked = true;
+      openStealthDisableEditor();
+    });
+    el("stealthCodeEdit").addEventListener("click", function () { openStealthEditor(false); });
     el("portMode").addEventListener("change", function (event) {
       var mode = event.target.value;
       var port = Number((el("fixedPortInput") || {}).value) || 0;
@@ -2920,16 +3235,21 @@ private const val WEB_MANAGER_PAGE_SCRIPT_TAIL: String = """
     });
     el("languageSelect").addEventListener("change", function (event) {
       var tag = event.target.value;
-      kpmPost("/api/settings/language", { tag: tag }, 20000).then(function () {
+      updateManagerSetting("language", tag, event.target).then(function () {
         event.target.dataset.current = tag;
-        notify("管理器语言已切换为 " + tag + "（原生管理器界面生效）");
         record("管理器语言：" + tag);
-      }).catch(function (error) {
-        event.target.value = event.target.dataset.current || "zh-CN";
-        notify("语言切换失败：" + (error.message || "未知错误"), true);
+      }).catch(function () { /* 状态已回滚 */ });
+    });
+    document.querySelectorAll("[data-manager-setting]").forEach(function (input) {
+      input.addEventListener("change", function (event) {
+        updateManagerSetting(event.target.dataset.managerSetting, event.target.checked, event.target)
+          .catch(function () { /* 状态已回滚 */ });
       });
     });
+    el("managerHomeTitleEdit").addEventListener("click", openManagerHomeTitleEditor);
+    el("dynamicManagerOpen").addEventListener("click", openDynamicManagerEditor);
     el("rebootMenu").addEventListener("click", openRebootMenu);
+    el("susfsShortcut").addEventListener("click", openNativeSusfsManager);
     el("rebootMenuSettings").addEventListener("click", openRebootMenu);
     el("assetFileInput").addEventListener("change", function (event) {
       var file = event.target.files && event.target.files[0];
@@ -2999,10 +3319,10 @@ private const val WEB_MANAGER_PAGE_SCRIPT_TAIL: String = """
       if (!button) return;
       changeModule(decodeURIComponent(button.dataset.module), button.dataset.action);
     });
-    el("superusers").addEventListener("click", function (event) {
-      var button = event.target.closest("button[data-app-uid]");
-      if (!button) return;
-      changeSuperuser(button.dataset.appUid, button.dataset.action);
+    el("superusers").addEventListener("change", function (event) {
+      var input = event.target.closest("input[data-app-uid]");
+      if (!input) return;
+      changeSuperuser(input.dataset.appUid, input.checked ? "grant" : "revoke");
     });
     el("sheetClose").addEventListener("click", closeConsole);
     el("sheetCancel").addEventListener("click", cancelJob);

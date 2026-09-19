@@ -221,7 +221,7 @@ fn ioctl_is_unsupported(error: &std::io::Error) -> bool {
     )
 }
 
-pub fn print_status() -> Result<()> {
+pub fn status() -> Value {
     let mut errors = Vec::new();
     let stored = match read_config() {
         Ok((config, _)) => config,
@@ -267,7 +267,7 @@ pub fn print_status() -> Result<()> {
         .or_else(|| stored.as_ref().map(|config| config.hash.clone()));
     let configured = effective_size.is_some() && effective_hash.is_some();
 
-    let output = json!({
+    json!({
         "schemaVersion": STATUS_SCHEMA_VERSION,
         "supported": supported,
         "configured": configured,
@@ -280,8 +280,11 @@ pub fn print_status() -> Result<()> {
             "signatureIndex": manager.signature_index,
         })).collect::<Vec<_>>(),
         "error": if errors.is_empty() { Value::Null } else { Value::String(errors.join("; ")) },
-    });
-    println!("{}", serde_json::to_string_pretty(&output)?);
+    })
+}
+
+pub fn print_status() -> Result<()> {
+    println!("{}", serde_json::to_string_pretty(&status())?);
     Ok(())
 }
 

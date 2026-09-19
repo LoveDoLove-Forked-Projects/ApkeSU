@@ -24,6 +24,11 @@ pub enum FeatureId {
     SelinuxHide = 4,
     AvcSpoof = 5,
     WebviewZygoteUmount = 7,
+    SeccompHookStatus = 8,
+    SeccompHookLastError = 9,
+    SeccompHookCallCount = 10,
+    SeccompHookReleaseCount = 11,
+    SeccompHookFailureCount = 12,
 }
 
 impl FeatureId {
@@ -36,6 +41,11 @@ impl FeatureId {
             4 => Some(Self::SelinuxHide),
             5 | AVC_SPOOF_LEGACY_ID => Some(Self::AvcSpoof),
             7 => Some(Self::WebviewZygoteUmount),
+            8 => Some(Self::SeccompHookStatus),
+            9 => Some(Self::SeccompHookLastError),
+            10 => Some(Self::SeccompHookCallCount),
+            11 => Some(Self::SeccompHookReleaseCount),
+            12 => Some(Self::SeccompHookFailureCount),
             _ => None,
         }
     }
@@ -49,6 +59,11 @@ impl FeatureId {
             Self::SelinuxHide => "selinux_hide",
             Self::AvcSpoof => "avc_spoof",
             Self::WebviewZygoteUmount => "webview_zygote_umount",
+            Self::SeccompHookStatus => "seccomp_hook_status",
+            Self::SeccompHookLastError => "seccomp_hook_last_error",
+            Self::SeccompHookCallCount => "seccomp_hook_call_count",
+            Self::SeccompHookReleaseCount => "seccomp_hook_release_count",
+            Self::SeccompHookFailureCount => "seccomp_hook_failure_count",
         }
     }
 
@@ -61,6 +76,17 @@ impl FeatureId {
             Self::AvcSpoof => Some(AVC_SPOOF_LEGACY_ID),
             _ => None,
         }
+    }
+
+    pub const fn is_read_only(self) -> bool {
+        matches!(
+            self,
+            Self::SeccompHookStatus
+                | Self::SeccompHookLastError
+                | Self::SeccompHookCallCount
+                | Self::SeccompHookReleaseCount
+                | Self::SeccompHookFailureCount
+        )
     }
 
     pub const fn description(self) -> &'static str {
@@ -82,6 +108,11 @@ impl FeatureId {
             Self::WebviewZygoteUmount => {
                 "WebView Zygote Umount - unmount modules from WebView zygote and its isolated children"
             }
+            Self::SeccompHookStatus => "GKI Seccomp hook capability and runtime status flags",
+            Self::SeccompHookLastError => "GKI Seccomp hook most recent errno",
+            Self::SeccompHookCallCount => "GKI Seccomp hook invocation count",
+            Self::SeccompHookReleaseCount => "GKI Seccomp filter release count",
+            Self::SeccompHookFailureCount => "GKI Seccomp hook failure count",
         }
     }
 }
@@ -95,6 +126,11 @@ fn parse_feature_id(name: &str) -> Result<FeatureId> {
         "selinux_hide" | "4" => Ok(FeatureId::SelinuxHide),
         "avc_spoof" | "5" | "10003" => Ok(FeatureId::AvcSpoof),
         "webview_zygote_umount" | "7" => Ok(FeatureId::WebviewZygoteUmount),
+        "seccomp_hook_status" | "8" => Ok(FeatureId::SeccompHookStatus),
+        "seccomp_hook_last_error" | "9" => Ok(FeatureId::SeccompHookLastError),
+        "seccomp_hook_call_count" | "10" => Ok(FeatureId::SeccompHookCallCount),
+        "seccomp_hook_release_count" | "11" => Ok(FeatureId::SeccompHookReleaseCount),
+        "seccomp_hook_failure_count" | "12" => Ok(FeatureId::SeccompHookFailureCount),
         _ => bail!("Unknown feature: {name}"),
     }
 }
@@ -115,6 +151,9 @@ fn get_kernel_feature(feature_id: FeatureId) -> Result<(u64, bool)> {
 }
 
 fn set_kernel_feature(feature_id: FeatureId, value: u64) -> Result<()> {
+    if feature_id.is_read_only() {
+        bail!("Feature {} is read-only", feature_id.name());
+    }
     let id = feature_id.canonical_id();
     match crate::ksucalls::set_feature(id, value) {
         Ok(()) => {}
@@ -272,10 +311,14 @@ pub fn get_feature(id: &str) -> Result<()> {
     println!("Feature: {} ({})", feature_id.name(), feature_id as u32);
     println!("Description: {}", feature_id.description());
     println!("Value: {value}");
-    println!(
-        "Status: {}",
-        if value != 0 { "enabled" } else { "disabled" }
-    );
+    if feature_id.is_read_only() {
+        println!("Status: read-only");
+    } else {
+        println!(
+            "Status: {}",
+            if value != 0 { "enabled" } else { "disabled" }
+        );
+    }
 
     Ok(())
 }
@@ -304,6 +347,9 @@ pub fn get_feature_config(id: &str) -> Result<()> {
 
 pub fn set_feature(id: &str, value: u64) -> Result<()> {
     let feature_id = parse_feature_id(id)?;
+    if feature_id.is_read_only() {
+        bail!("Feature '{}' is read-only", feature_id.name());
+    }
 
     // Check if this feature is managed by any module
     if let Ok(managed_features_map) = crate::module::get_managed_features() {
@@ -348,6 +394,22 @@ pub fn set_feature(id: &str, value: u64) -> Result<()> {
     Ok(())
 }
 
+/// Query a feature for local management surfaces without parsing CLI output.
+/// The final flag reports whether an active module owns the feature.
+pub fn feature_state(id: &str) -> Result<(u64, bool, bool)> {
+    let feature_id = parse_feature_id(id)?;
+    let (value, supported) = get_kernel_feature(feature_id)?;
+    let managed = managed_feature_ids().contains(&feature_id.canonical_id());
+    Ok((value, supported, managed))
+}
+
+/// Apply a writable feature and persist the complete supported feature snapshot
+/// so the same state is restored on the next boot.
+pub fn set_feature_persisted(id: &str, value: u64) -> Result<()> {
+    set_feature(id, value)?;
+    save_config()
+}
+
 pub fn list_features() {
     println!("Available Features:");
     println!("{}", "=".repeat(80));
@@ -374,6 +436,11 @@ pub fn list_features() {
         FeatureId::SelinuxHide,
         FeatureId::AvcSpoof,
         FeatureId::WebviewZygoteUmount,
+        FeatureId::SeccompHookStatus,
+        FeatureId::SeccompHookLastError,
+        FeatureId::SeccompHookCallCount,
+        FeatureId::SeccompHookReleaseCount,
+        FeatureId::SeccompHookFailureCount,
     ];
 
     for feature_id in &all_features {
@@ -382,6 +449,8 @@ pub fn list_features() {
 
         let status = if !supported {
             "NOT_SUPPORTED".to_string()
+        } else if feature_id.is_read_only() {
+            format!("READ_ONLY ({value})")
         } else if value != 0 {
             format!("ENABLED ({value})")
         } else {
@@ -587,6 +656,16 @@ mod tests {
     fn other_features_are_only_retried_on_state_mismatch() {
         assert!(!should_reapply_feature(FeatureId::KernelUmount, 1, 1));
         assert!(should_reapply_feature(FeatureId::KernelUmount, 1, 0));
+    }
+
+    #[test]
+    fn seccomp_hook_diagnostics_are_read_only() {
+        assert!(FeatureId::SeccompHookStatus.is_read_only());
+        assert!(FeatureId::SeccompHookLastError.is_read_only());
+        assert!(FeatureId::SeccompHookCallCount.is_read_only());
+        assert!(FeatureId::SeccompHookReleaseCount.is_read_only());
+        assert!(FeatureId::SeccompHookFailureCount.is_read_only());
+        assert!(!FeatureId::KernelUmount.is_read_only());
     }
 }
 

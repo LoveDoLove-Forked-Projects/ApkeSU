@@ -265,6 +265,7 @@ void __exit kernelsu_exit(void)
     ksu_selinux_hide_exit();
     ksu_adb_root_exit();
     ksu_sulog_exit();
+    ksu_seccomp_hook_exit();
     ksu_feature_exit();
 
     put_cred(ksu_cred);

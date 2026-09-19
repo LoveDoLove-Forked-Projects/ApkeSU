@@ -13,6 +13,8 @@ import okhttp3.Cache
 import okhttp3.OkHttpClient
 import org.lsposed.hiddenapibypass.HiddenApiBypass
 import me.weishu.kernelsu.ui.util.AppLanguageManager
+import me.weishu.kernelsu.stealth.StealthModeStore
+import me.weishu.kernelsu.ui.webmanager.ManagerAppSettingsStore
 import java.io.File
 import java.util.Locale
 
@@ -61,6 +63,9 @@ class KernelSUApplication : Application(), ViewModelStoreOwner {
         if (!isUserUnlocked()) {
             return
         }
+
+        StealthModeStore.reconcileFromRootAsync(this)
+        ManagerAppSettingsStore.reconcileFromRootAsync(this)
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
             val prefs = this.getSharedPreferences("settings", MODE_PRIVATE)

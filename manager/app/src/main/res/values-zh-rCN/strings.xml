@@ -379,6 +379,7 @@
     <string name="web_manager_open">启动网页管理器</string>
     <string name="web_manager_open_summary">在浏览器中打开网页管理器页面</string>
     <string name="web_manager_notification_title">网页管理器服务运行中</string>
+    <string name="web_manager_notification_starting">正在启动本地网页管理器…</string>
     <string name="web_manager_notification_text">监听 127.0.0.1:%1$d</string>
     <string name="web_manager_open_failed">无法打开网页管理器：%1$s</string>
     <string name="direct_install">直接安装（推荐）</string>
@@ -3333,4 +3334,16 @@
     <string name="susfs_guide_faq_partial">请查看逐项错误码。目标可能不存在、晚挂载、内核不支持或被内核拒绝；开机服务会继续重试。</string>
     <string name="susfs_guide_faq_618_question">Android 17 / 6.18 支持吗？</string>
     <string name="susfs_guide_faq_618">取决于设备内核和工具是否真实报告该能力；当上游 SUSFS 源码或运行时探测缺失时，管理器不会宣称支持。</string>
+    <string name="stealth_mode_title">隐身模式</string>
+    <string name="stealth_mode_summary">主页伪装成“未安装”，隐藏超级用户、模块、KPM 与设置；启用后只能在网页管理器输入密令或通过拨号密令关闭。</string>
+    <string name="stealth_mode_code_title">隐身密钥</string>
+    <string name="stealth_mode_code_format">格式为 *#*# 加 3–16 位数字再加 #*#*；密令会备份到 /data/adb/ksu/hansu_code。</string>
+    <string name="stealth_mode_code_invalid">请输入 3–16 位数字，或完整的 *#*#…#*#* 密令。</string>
+    <string name="stealth_mode_enable_title">启用隐身模式？</string>
+    <string name="stealth_mode_dialog_summary">启用后主页将显示“未安装”，所有管理与设置页面都会隐藏。请保存此密令；之后只能在网页管理器输入密令或通过拨号密令恢复。</string>
+    <string name="stealth_mode_enable_action">启用</string>
+    <string name="stealth_mode_save_action">保存</string>
+    <string name="stealth_mode_enabled_toast">隐身模式已启用，密令已备份。</string>
+    <string name="stealth_mode_disabled_toast">隐身模式已关闭。</string>
+    <string name="stealth_mode_save_failed">无法更新隐身模式：%1$s</string>
 </resources>

@@ -48,6 +48,8 @@ import me.weishu.kernelsu.ui.util.BUILTIN_MOUNT_VARIANT_FULL
 import me.weishu.kernelsu.ui.util.BUILTIN_MOUNT_VARIANT_LITE
 import me.weishu.kernelsu.ui.util.LauncherIconOption
 import me.weishu.kernelsu.ui.util.KernelStatusEvents
+import me.weishu.kernelsu.stealth.StealthModeStore
+import me.weishu.kernelsu.ui.webmanager.ManagerAppSettingsStore
 import java.util.concurrent.atomic.AtomicLong
 
 class SettingsViewModel(
@@ -121,6 +123,8 @@ class SettingsViewModel(
             val customThemePresets = repo.getCustomThemePresets()
             val enableWebDebugging = repo.enableWebDebugging
             val webManagerAutoStart = repo.webManagerAutoStart
+            val stealthModeEnabled = StealthModeStore.isEnabled()
+            val stealthModeCode = StealthModeStore.code()
             val launcherIcon = repo.launcherIcon
             val customManagerName = repo.customManagerName
             val customHomeTitle = repo.customHomeTitle
@@ -242,6 +246,8 @@ class SettingsViewModel(
                     customThemePresets = customThemePresets,
                     enableWebDebugging = enableWebDebugging,
                     webManagerAutoStart = webManagerAutoStart,
+                    stealthModeEnabled = stealthModeEnabled,
+                    stealthModeCode = stealthModeCode,
                     launcherIcon = launcherIcon,
                     customManagerName = customManagerName,
                     customHomeTitle = customHomeTitle,
@@ -480,26 +486,31 @@ class SettingsViewModel(
     fun setCheckModuleUpdate(enabled: Boolean) {
         repo.checkModuleUpdate = enabled
         _uiState.update { it.copy(checkModuleUpdate = enabled) }
+        ManagerAppSettingsStore.exportToRootAsync()
     }
 
     fun setShowVersionMismatchWarning(enabled: Boolean) {
         repo.showVersionMismatchWarning = enabled
         _uiState.update { it.copy(showVersionMismatchWarning = enabled) }
+        ManagerAppSettingsStore.exportToRootAsync()
     }
 
     fun setShowGkiWarning(enabled: Boolean) {
         repo.showGkiWarning = enabled
         _uiState.update { it.copy(showGkiWarning = enabled) }
+        ManagerAppSettingsStore.exportToRootAsync()
     }
 
     fun setShowHomeSupportCard(enabled: Boolean) {
         repo.showHomeSupportCard = enabled
         _uiState.update { it.copy(showHomeSupportCard = enabled) }
+        ManagerAppSettingsStore.exportToRootAsync()
     }
 
     fun setShowHomeLearnCard(enabled: Boolean) {
         repo.showHomeLearnCard = enabled
         _uiState.update { it.copy(showHomeLearnCard = enabled) }
+        ManagerAppSettingsStore.exportToRootAsync()
     }
 
     fun setMiuixClassicHomeLayoutEnabled(enabled: Boolean) {
@@ -690,6 +701,7 @@ class SettingsViewModel(
     fun setCustomHomeTitle(title: String) {
         repo.customHomeTitle = title
         _uiState.update { it.copy(customHomeTitle = repo.customHomeTitle) }
+        ManagerAppSettingsStore.exportToRootAsync()
     }
 
     fun setCustomWallpaperUri(uri: String?) {
@@ -1132,6 +1144,53 @@ class SettingsViewModel(
             // Keep the existing preference for APK fallback, while persisting
             // the native daemon switch when the bundled ksud supports it.
             setNativeWebManagerEnabled(enabled)
+        }
+    }
+
+    fun setStealthMode(enabled: Boolean, code: String) {
+        if (_uiState.value.stealthModeBusy) return
+        if (!enabled) {
+            Log.w(TAG, "ignoring in-app stealth disable request")
+            return
+        }
+        val normalizedCode = StealthModeStore.normalizeCode(code)
+        if (normalizedCode == null) {
+            Toast.makeText(ksuApp, R.string.stealth_mode_code_invalid, Toast.LENGTH_LONG).show()
+            return
+        }
+        _uiState.update { it.copy(stealthModeBusy = true) }
+        viewModelScope.launch(Dispatchers.IO) {
+            StealthModeStore.setEnabledBlocking(enabled, normalizedCode)
+                .onSuccess {
+                    _uiState.update {
+                        it.copy(
+                            stealthModeEnabled = enabled,
+                            stealthModeCode = normalizedCode,
+                            stealthModeBusy = false,
+                        )
+                    }
+                    withContext(Dispatchers.Main) {
+                        Toast.makeText(
+                            ksuApp,
+                            if (enabled) R.string.stealth_mode_enabled_toast else R.string.stealth_mode_disabled_toast,
+                            Toast.LENGTH_LONG,
+                        ).show()
+                    }
+                }
+                .onFailure { error ->
+                    Log.e(TAG, "update stealth mode failed", error)
+                    _uiState.update { it.copy(stealthModeBusy = false) }
+                    withContext(Dispatchers.Main) {
+                        Toast.makeText(
+                            ksuApp,
+                            ksuApp.getString(
+                                R.string.stealth_mode_save_failed,
+                                error.message ?: "unknown error",
+                            ),
+                            Toast.LENGTH_LONG,
+                        ).show()
+                    }
+                }
         }
     }
 

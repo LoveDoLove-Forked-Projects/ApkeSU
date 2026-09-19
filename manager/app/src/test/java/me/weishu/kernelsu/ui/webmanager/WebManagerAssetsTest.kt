@@ -84,10 +84,11 @@ class WebManagerAssetsTest {
 
     @Test
     fun navIconMetaClampsTighterThanWallpaper() {
-        val raw = JSONObject().put("scale", 4.0).put("offsetY", 40.0)
+        val raw = JSONObject().put("scale", 4.0).put("offsetX", -40.0).put("offsetY", 40.0)
         val meta = WebManagerAssets.normalizeMeta(WebManagerAssets.KIND_NAV_ICON, raw, 2L)
-        assertEquals(1.8, meta.getDouble("scale"), 0.0001)
-        assertEquals(8.0, meta.getDouble("offsetY"), 0.0001)
+        assertEquals(3.0, meta.getDouble("scale"), 0.0001)
+        assertEquals(-12.0, meta.getDouble("offsetX"), 0.0001)
+        assertEquals(12.0, meta.getDouble("offsetY"), 0.0001)
         assertFalse(meta.has("fit"))
         assertFalse(meta.has("dim"))
     }

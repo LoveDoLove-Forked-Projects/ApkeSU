@@ -84,6 +84,8 @@ internal object SettingsCatalog {
         entry("web_debugging", SettingsCategory.AppAndMaintenance, R.string.enable_web_debugging, R.string.enable_web_debugging_summary),
         entry("web_manager_auto_start", SettingsCategory.AppAndMaintenance, R.string.web_manager_auto_start, R.string.web_manager_auto_start_summary),
         entry("web_manager_open", SettingsCategory.AppAndMaintenance, R.string.web_manager_open, R.string.web_manager_open_summary),
+        entry("stealth_mode", SettingsCategory.AppAndMaintenance, R.string.stealth_mode_title, R.string.stealth_mode_summary),
+        entry("stealth_mode_code", SettingsCategory.AppAndMaintenance, R.string.stealth_mode_code_title, R.string.stealth_mode_code_format),
         entry("auto_jailbreak", SettingsCategory.AppAndMaintenance, R.string.settings_auto_jailbreak, R.string.settings_auto_jailbreak_summary),
         entry("uninstall", SettingsCategory.AppAndMaintenance, R.string.settings_uninstall) { it.isLkmMode },
         entry("send_log", SettingsCategory.AppAndMaintenance, R.string.send_log),

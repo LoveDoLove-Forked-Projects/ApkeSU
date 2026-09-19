@@ -121,6 +121,12 @@ class MainLayoutTest {
     }
 
     @Test
+    fun retainedKpmWebViewDisablesLayeredNavigationTransitions() {
+        assertTrue(shouldUseLayeredNavigationTransitions(kpmPageActive = false))
+        assertFalse(shouldUseLayeredNavigationTransitions(kpmPageActive = true))
+    }
+
+    @Test
     fun kpmDestinationInsertionKeepsOtherPagesStable() {
         assertEquals(
             MainDestination.SuperUser,
@@ -137,6 +143,18 @@ class MainLayoutTest {
         assertEquals(
             MainDestination.Module,
             mainDestinations(kpmActive = true)[3],
+        )
+    }
+
+    @Test
+    fun stealthModeOnlyKeepsHomeDestination() {
+        assertEquals(
+            listOf(MainDestination.Home),
+            mainDestinations(kpmActive = false, stealthModeEnabled = true),
+        )
+        assertEquals(
+            listOf(MainDestination.Home),
+            mainDestinations(kpmActive = true, stealthModeEnabled = true),
         )
     }
 

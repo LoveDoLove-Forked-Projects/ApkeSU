@@ -51,7 +51,8 @@ import me.weishu.kernelsu.ui.viewmodel.HomeViewModel
 fun HomePager(
     navigator: Navigator,
     bottomInnerPadding: Dp,
-    isCurrentPage: Boolean = true
+    isCurrentPage: Boolean = true,
+    stealthModeEnabled: Boolean = false,
 ) {
     val viewModel = viewModel<HomeViewModel>()
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
@@ -68,6 +69,7 @@ fun HomePager(
         mutableStateOf(readHomeLayoutState(context).enabled)
     }
     val refreshTick by KernelStatusEvents.refreshTick.collectAsStateWithLifecycle()
+    val displayState = if (stealthModeEnabled) uiState.asStealthModeState() else uiState
 
     var hasActivated by remember { mutableStateOf(false) }
     if (isCurrentPage) hasActivated = true
@@ -105,14 +107,14 @@ fun HomePager(
         }
     }
 
-    val showInlineInstallFeedback = !uiState.isKernelActive && uiState.kernelVersion.isGKI()
+    val showInlineInstallFeedback = !displayState.isKernelActive && displayState.kernelVersion.isGKI()
     val interfaceStyle = LocalInterfaceStyle.current
     val useClassicMiuixHomeLayout = shouldUseClassicMiuixHomeLayout(
         interfaceStyle = interfaceStyle,
         requested = uiState.miuixClassicHomeLayoutEnabled,
         customHomeLayoutEnabled = customHomeLayoutEnabled,
     )
-    val actions = HomeActions(
+    val normalActions = HomeActions(
         onInstallClick = {
             if (showInlineInstallFeedback) {
                 if (!installFeedbackActive) {
@@ -127,8 +129,8 @@ fun HomePager(
                 navigator.push(Route.Install)
             }
         },
-        onSuperuserClick = { if (uiState.isFullFeatured) mainState.animateTo(MainDestination.SuperUser) },
-        onModuleClick = { if (uiState.isFullFeatured) mainState.animateTo(MainDestination.Module) },
+        onSuperuserClick = { if (displayState.isFullFeatured) mainState.animateTo(MainDestination.SuperUser) },
+        onModuleClick = { if (displayState.isFullFeatured) mainState.animateTo(MainDestination.Module) },
         onOpenUrl = uriHandler::openUri,
         onStyleSettingsClick = { navigator.push(Route.PreInstallStyleSettings) },
         onDiagnoseClick = viewModel::runRootDiagnostics,
@@ -164,36 +166,46 @@ fun HomePager(
             }
         },
     )
+    val actions = if (stealthModeEnabled) {
+        HomeActions(
+            onInstallClick = {},
+            onSuperuserClick = {},
+            onModuleClick = {},
+            onOpenUrl = {},
+        )
+    } else {
+        normalActions
+    }
 
     Box(modifier = Modifier.fillMaxSize()) {
         if (interfaceStyle == InterfaceStyle.Material.value) {
             HomePagerMaterial(
-                state = uiState,
+            state = displayState,
                 actions = actions,
                 bottomInnerPadding = bottomInnerPadding,
             )
         } else if (customHomeLayoutEnabled) {
             HomePagerMiuix(
-                state = uiState,
+                state = displayState,
                 actions = actions,
                 bottomInnerPadding = bottomInnerPadding,
                 installFeedbackActive = installFeedbackActive && showInlineInstallFeedback,
             )
         } else when (interfaceStyle) {
             InterfaceStyle.Skrootpro.value -> HomePagerSkrootpro(
-                state = uiState,
+                state = displayState,
                 actions = actions,
                 bottomInnerPadding = bottomInnerPadding,
             )
 
             InterfaceStyle.Delta.value -> HomePagerDelta(
-                state = uiState,
+                state = displayState,
                 actions = actions,
                 bottomInnerPadding = bottomInnerPadding,
             )
 
             InterfaceStyle.Alpha.value -> HomePagerAlpha(
-                state = uiState,
+                state = displayState,
                 actions = actions,
                 bottomInnerPadding = bottomInnerPadding,
             )
@@ -201,14 +213,14 @@ fun HomePager(
             InterfaceStyle.Snow.value,
             InterfaceStyle.Rain.value,
             InterfaceStyle.Pixel.value -> HomePagerMiuix(
-                state = uiState,
+                state = displayState,
                 actions = actions,
                 bottomInnerPadding = bottomInnerPadding,
                 installFeedbackActive = installFeedbackActive && showInlineInstallFeedback,
             )
 
             else -> HomePagerMiuix(
-                state = uiState,
+                state = displayState,
                 actions = actions,
                 bottomInnerPadding = bottomInnerPadding,
                 installFeedbackActive = installFeedbackActive && showInlineInstallFeedback,
@@ -216,13 +228,13 @@ fun HomePager(
             )
         }
 
-        if (!uiState.isFullFeatured) {
+        if (!displayState.isFullFeatured && !stealthModeEnabled) {
             val bottomPadding = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding() +
                     WindowInsets.captionBar.asPaddingValues().calculateBottomPadding() +
                     bottomInnerPadding + 18.dp
             FloatingActionButton(
                 onClick = {
-                    if (uiState.isKernelActive) {
+                    if (displayState.isKernelActive) {
                         mainState.animateTo(MainDestination.Settings)
                     } else {
                         actions.onStyleSettingsClick()
@@ -238,7 +250,7 @@ fun HomePager(
                 Icon(
                     imageVector = Icons.Rounded.Settings,
                     contentDescription = stringResource(
-                        if (uiState.isKernelActive) R.string.settings else R.string.settings_ui_mode
+                        if (displayState.isKernelActive) R.string.settings else R.string.settings_ui_mode
                     ),
                 )
             }

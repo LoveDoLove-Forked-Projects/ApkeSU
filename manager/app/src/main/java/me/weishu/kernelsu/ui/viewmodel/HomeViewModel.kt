@@ -31,11 +31,16 @@ import me.weishu.kernelsu.data.repository.SHOW_VERSION_MISMATCH_WARNING_KEY
 import me.weishu.kernelsu.getKernelVersion
 import me.weishu.kernelsu.ksuApp
 import me.weishu.kernelsu.ui.screen.home.HomeUiState
+import me.weishu.kernelsu.ui.screen.home.GkiSeccompHookReport
 import me.weishu.kernelsu.ui.screen.home.KernelHookType
 import me.weishu.kernelsu.ui.screen.home.RootRuntimeState
+import me.weishu.kernelsu.ui.screen.home.SeccompCapabilityChecks
+import me.weishu.kernelsu.ui.screen.home.SeccompSelfCheckResult
+import me.weishu.kernelsu.ui.screen.home.SeccompStatusResolution
 import me.weishu.kernelsu.ui.screen.home.SystemInfo
 import me.weishu.kernelsu.ui.screen.home.getManagerVersion
 import me.weishu.kernelsu.ui.screen.home.hasBlockingRootVersionMismatch
+import me.weishu.kernelsu.ui.screen.home.resolveSeccompDisplayStatus
 import me.weishu.kernelsu.ui.util.apkeSuKernelModuleLoaded
 import me.weishu.kernelsu.ui.util.apkeSuRootAvailable
 import me.weishu.kernelsu.ui.util.collectRootDiagnosticInfo
@@ -45,21 +50,28 @@ import me.weishu.kernelsu.ui.util.getInstalledKsudStatus
 import me.weishu.kernelsu.ui.util.getSELinuxStatusRaw
 import me.weishu.kernelsu.ui.util.getSuperuserCount
 import me.weishu.kernelsu.ui.util.isHiddenPathLkmMode
+import me.weishu.kernelsu.ui.util.KsuCli
 import me.weishu.kernelsu.ui.util.ksuRootAvailable
 import me.weishu.kernelsu.ui.util.probeKpmSummary
 import me.weishu.kernelsu.ui.util.probeSusfsSummary
 import me.weishu.kernelsu.ui.util.resolveDeviceName
+import me.weishu.kernelsu.ui.util.runSeccompSelfChecks
 import me.weishu.kernelsu.ui.util.rootAvailable
+import me.weishu.kernelsu.ui.screen.home.resolveSeccompStatus
 import java.util.concurrent.atomic.AtomicLong
 import java.text.DateFormat
 import java.util.Date
 import org.json.JSONObject
+
+private const val SECCOMP_FAILURE_REASON_KEY = "last_failure_reason"
+private const val SECCOMP_FAILURE_TIME_KEY = "last_failure_time"
 
 class HomeViewModel(
     private val repo: SettingsRepository = SettingsRepositoryImpl()
 ) : ViewModel() {
 
     private val prefs = ksuApp.getSharedPreferences("settings", Context.MODE_PRIVATE)
+    private val seccompPrefs = ksuApp.getSharedPreferences("seccomp_guard", Context.MODE_PRIVATE)
     private val listener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
         if (key == SHOW_VERSION_MISMATCH_WARNING_KEY ||
             key == SHOW_GKI_WARNING_KEY ||
@@ -154,14 +166,16 @@ class HomeViewModel(
         _diagnosticReport.value = null
     }
 
-    private fun buildStateSafely(): HomeUiState {
-        return runCatching { buildState() }.getOrElse { throwable ->
+    private suspend fun buildStateSafely(): HomeUiState {
+        return try {
+            buildState()
+        } catch (throwable: Throwable) {
             Log.e(TAG, "build home state failed", throwable)
             fallbackState()
         }
     }
 
-    private fun buildState(): HomeUiState {
+    private suspend fun buildState(): HomeUiState {
         val kernelVersion = getKernelVersion()
         var isManager = runCatching { Natives.isManager }.getOrDefault(false)
         var ksuVersion = runCatching { Natives.version.takeIf { it > 0 } }.getOrNull()
@@ -182,9 +196,12 @@ class HomeViewModel(
         }
         val kernelUAPIVersion = ksuVersion?.let { runCatching { Natives.kernelUAPIVersion }.getOrNull() }
         val managerUAPIVersion = runCatching { Natives.managerUAPIVersion }.getOrDefault(0)
+        val lateLoadMode = runCatching { Natives.isLateLoadMode }.getOrDefault(false)
+        val lkmRuntime = runCatching { Natives.isLkmMode }.getOrDefault(false)
         val lkmMode = ksuVersion?.let {
-            if (kernelVersion.isGKI()) runCatching { Natives.isLkmMode }.getOrNull() else null
+            if (kernelVersion.isGKI()) lkmRuntime else null
         }
+        val builtInGkiMode = driverConnected && kernelVersion.isGKI() && !lkmRuntime && !lateLoadMode
         val hiddenPathLkmMode = lkmMode == true &&
             ksuDaemonRoot &&
             runCatching { isHiddenPathLkmMode() }.getOrDefault(false)
@@ -220,6 +237,22 @@ class HomeViewModel(
         } else {
             kernelHookStatus and Natives.HOOK_STATUS_TRACEPOINT != 0L
         }
+        val rawSeccompStatus = runCatching {
+            Os.prctl(21 /* PR_GET_SECCOMP */, 0, 0, 0, 0)
+        }.getOrDefault(-1)
+        val seccompHookReport = readGkiSeccompHookReport(driverConnected)
+        val seccompResolution = resolveSeccompRuntimeStatus(
+            rawStatus = rawSeccompStatus,
+            hookReport = seccompHookReport,
+            kernelVersion = kernelVersion,
+            driverConnected = driverConnected,
+            lkmRuntime = lkmRuntime,
+            lateLoadMode = lateLoadMode,
+            kernelUapi = kernelUAPIVersion,
+            managerUapi = managerUAPIVersion,
+            ksudReady = ksuDaemonRoot && installedKsud?.present == true &&
+                installedKsud.versionCode == BuildConfig.VERSION_CODE,
+        )
         return HomeUiState(
             kernelVersion = kernelVersion,
             ksuVersion = ksuVersion,
@@ -241,7 +274,7 @@ class HomeViewModel(
                 hasTracepoint = hasTracepoint,
             ),
             isSafeMode = runCatching { Natives.isSafeMode }.getOrDefault(false),
-            isLateLoadMode = runCatching { Natives.isLateLoadMode }.getOrDefault(false),
+            isLateLoadMode = lateLoadMode,
             currentManagerVersionCode = managerVersion.versionCode,
             showVersionMismatchWarningSetting = repo.showVersionMismatchWarning,
             showGkiWarningSetting = repo.showGkiWarning,
@@ -257,11 +290,113 @@ class HomeViewModel(
                 deviceModel = runCatching { resolveDeviceName() }.getOrDefault(Build.MODEL),
                 fingerprint = Build.FINGERPRINT,
                 selinuxStatus = runCatching { getSELinuxStatusRaw() }.getOrDefault("unknown"),
-                seccompStatus = runCatching {
-                    Os.prctl(21 /* PR_GET_SECCOMP */, 0, 0, 0, 0)
-                }.getOrDefault(-1),
+                seccompStatus = resolveSeccompDisplayStatus(
+                    builtInGkiMode = builtInGkiMode,
+                    guardedStatus = seccompResolution.status,
+                ),
+                seccompFailureReason = seccompResolution.failureReason,
+                seccompProcessStatus = rawSeccompStatus,
+                seccompHookStatus = seccompHookReport.status,
+                seccompHookLastError = seccompHookReport.lastError,
+                seccompHookCallCount = seccompHookReport.callCount,
+                seccompHookReleaseCount = seccompHookReport.releaseCount,
+                seccompHookFailureCount = seccompHookReport.failureCount,
             ),
         )
+    }
+
+    private fun readGkiSeccompHookReport(driverConnected: Boolean): GkiSeccompHookReport {
+        if (!driverConnected) {
+            return GkiSeccompHookReport(
+                status = Natives.SECCOMP_HOOK_STATUS_UNSUPPORTED,
+                lastError = Natives.SECCOMP_HOOK_ERROR_UNSUPPORTED,
+                callCount = Natives.SECCOMP_HOOK_COUNT_UNSUPPORTED,
+                releaseCount = Natives.SECCOMP_HOOK_COUNT_UNSUPPORTED,
+                failureCount = Natives.SECCOMP_HOOK_COUNT_UNSUPPORTED,
+            )
+        }
+        return GkiSeccompHookReport(
+            status = runCatching { Natives.gkiSeccompHookStatus }
+                .getOrDefault(Natives.SECCOMP_HOOK_STATUS_UNSUPPORTED),
+            lastError = runCatching { Natives.gkiSeccompHookLastError }
+                .getOrDefault(Natives.SECCOMP_HOOK_ERROR_UNSUPPORTED),
+            callCount = runCatching { Natives.gkiSeccompHookCallCount }
+                .getOrDefault(Natives.SECCOMP_HOOK_COUNT_UNSUPPORTED),
+            releaseCount = runCatching { Natives.gkiSeccompHookReleaseCount }
+                .getOrDefault(Natives.SECCOMP_HOOK_COUNT_UNSUPPORTED),
+            failureCount = runCatching { Natives.gkiSeccompHookFailureCount }
+                .getOrDefault(Natives.SECCOMP_HOOK_COUNT_UNSUPPORTED),
+        )
+    }
+
+    private suspend fun resolveSeccompRuntimeStatus(
+        rawStatus: Int,
+        hookReport: GkiSeccompHookReport,
+        kernelVersion: KernelVersion,
+        driverConnected: Boolean,
+        lkmRuntime: Boolean,
+        lateLoadMode: Boolean,
+        kernelUapi: Int?,
+        managerUapi: Int,
+        ksudReady: Boolean,
+    ): SeccompStatusResolution {
+        val capabilities = SeccompCapabilityChecks(
+            gki = driverConnected && kernelVersion.isGKI() && !lkmRuntime && !lateLoadMode,
+            ko = driverConnected && lkmRuntime && !lateLoadMode,
+            gkiHookReady = hookReport.usable,
+            gkiHookFailureReason = hookReport.failureReason,
+            uapi = kernelUapi != null && kernelUapi > 0 &&
+                managerUapi > 0 && kernelUapi == managerUapi,
+            ksud = ksudReady,
+        )
+        val selfCheck = if (capabilities.ready) {
+            runSeccompSelfChecks().let {
+                SeccompSelfCheckResult(
+                    ksud = it.ksud,
+                    rootShell = it.rootShell,
+                    moduleQuery = it.moduleQuery,
+                    failureReason = it.failureReason,
+                )
+            }
+        } else {
+            null
+        }
+        val resolution = resolveSeccompStatus(capabilities, selfCheck)
+        if (resolution.status != 2) {
+            persistSeccompFailure(resolution.failureReason)
+            val shouldRollback = rawStatus == 2 || selfCheck?.allPassed == false
+            if (shouldRollback) {
+                // The guard is deliberately best effort on older kernels. The
+                // status remains disabled even when the optional ioctl is absent.
+                runCatching { Natives.disableCurrentSeccomp() }
+                    .onSuccess { disabled ->
+                        if (!disabled) Log.w(TAG, "kernel rejected Seccomp rollback")
+                    }
+                    .onFailure { Log.w(TAG, "failed to release Seccomp filter", it) }
+                restoreNormalRuntimeState()
+            }
+        } else if (resolution.status == 2) {
+            seccompPrefs.edit()
+                .remove(SECCOMP_FAILURE_REASON_KEY)
+                .remove(SECCOMP_FAILURE_TIME_KEY)
+                .apply()
+        }
+        val persistedReason = seccompPrefs.getString(SECCOMP_FAILURE_REASON_KEY, "").orEmpty()
+        return resolution.copy(failureReason = resolution.failureReason.ifBlank { persistedReason })
+    }
+
+    private fun persistSeccompFailure(reason: String) {
+        seccompPrefs.edit()
+            .putString(SECCOMP_FAILURE_REASON_KEY, reason.ifBlank { "seccomp_self_check_failed" })
+            .putLong(SECCOMP_FAILURE_TIME_KEY, System.currentTimeMillis())
+            .apply()
+    }
+
+    private fun restoreNormalRuntimeState() {
+        // Self-checks are read-only; reset only the transient shell/driver
+        // caches so the next refresh observes the restored normal state.
+        KsuCli.reset()
+        runCatching { Natives.refreshInfo() }
     }
 
     private fun fallbackState(): HomeUiState {
@@ -269,6 +404,10 @@ class HomeViewModel(
         val managerUAPIVersion = runCatching { Natives.managerUAPIVersion }.getOrDefault(0)
         val ksuVersion = runCatching { Natives.version.takeIf { it > 0 } }.getOrNull()
         val isKernelActive = ksuVersion != null || apkeSuKernelModuleLoaded()
+        val kernelVersion = runCatching { getKernelVersion() }.getOrElse { KernelVersion(0, 0, 0) }
+        val builtInGkiMode = isKernelActive && kernelVersion.isGKI() &&
+            !runCatching { Natives.isLkmMode }.getOrDefault(false) &&
+            !runCatching { Natives.isLateLoadMode }.getOrDefault(false)
         val isManager = isKernelActive && runCatching { Natives.isManager }.getOrDefault(false)
         val ksuDaemonRoot = isKernelActive && runCatching { ksuRootAvailable() }.getOrDefault(false)
         val rootRuntimeState = RootRuntimeState.resolve(
@@ -278,7 +417,7 @@ class HomeViewModel(
             blockingVersionMismatch = false,
         )
         return HomeUiState(
-            kernelVersion = runCatching { getKernelVersion() }.getOrElse { KernelVersion(0, 0, 0) },
+            kernelVersion = kernelVersion,
             ksuVersion = ksuVersion,
             isKernelActive = isKernelActive,
             managerUAPIVersion = managerUAPIVersion,
@@ -313,7 +452,10 @@ class HomeViewModel(
                 deviceModel = Build.MODEL,
                 fingerprint = Build.FINGERPRINT,
                 selinuxStatus = "unknown",
-                seccompStatus = -1,
+                seccompStatus = resolveSeccompDisplayStatus(
+                    builtInGkiMode = builtInGkiMode,
+                    guardedStatus = -1,
+                ),
             ),
         )
     }

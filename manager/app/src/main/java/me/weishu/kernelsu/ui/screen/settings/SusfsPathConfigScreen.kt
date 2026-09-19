@@ -692,7 +692,11 @@ private fun SusfsStatusPanel(
     val available = state.available && !loading
     val runtimeState = state.runtimeStatus.state
     val runtimeFailed = available && runtimeState == "failed"
-    val runtimeWarning = available && runtimeState in setOf("partial", "reboot_pending", "pending")
+    val runtimeWarning = available && (
+        runtimeState in setOf("partial", "reboot_pending", "pending") ||
+            state.runtimeStatus.requiresReboot ||
+            (runtimeState == "disabled" && state.runtimeStatus.failedCount > 0)
+        )
     val message = when {
         loading -> stringResource(R.string.processing)
         state.available -> stringResource(R.string.susfs_path_available, state.toolPath)
@@ -787,6 +791,13 @@ private fun SusfsStatusPanel(
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             style = MaterialTheme.typography.labelSmall,
                         )
+                        if (state.runtimeStatus.requiresReboot && runtimeState != "reboot_pending") {
+                            Text(
+                                text = stringResource(R.string.susfs_state_reboot_pending),
+                                color = MaterialTheme.colorScheme.onSecondaryContainer,
+                                style = MaterialTheme.typography.labelSmall,
+                            )
+                        }
                         state.runtimeStatus.issues.take(3).forEach { issue ->
                             Text(
                                 text = stringResource(

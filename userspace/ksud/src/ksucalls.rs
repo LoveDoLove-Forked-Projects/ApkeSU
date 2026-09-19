@@ -76,6 +76,8 @@ pub fn setup_sigsys_handler() {
 
 const DRIVER_FD_NAME: &str = "anon_inode:[ksu_driver]";
 const SU_DRIVER_FD_NAME: &str = "anon_inode:[ksu_driver_su]";
+const FIRST_APPLICATION_APPID: u32 = 10_000;
+const LAST_APPLICATION_APPID: u32 = 19_999;
 
 // Global driver fd cache
 static DRIVER_FD: Mutex<RawFd> = Mutex::new(-1);
@@ -405,6 +407,105 @@ fn copy_profile_string(
     Ok(())
 }
 
+fn push_manager_appid(appids: &mut Vec<u32>, appid: u32) {
+    if (FIRST_APPLICATION_APPID..=LAST_APPLICATION_APPID).contains(&appid)
+        && !appids.contains(&appid)
+    {
+        appids.push(appid);
+    }
+}
+
+fn profile_write_manager_appids() -> Vec<u32> {
+    let mut appids = Vec::new();
+    if let Ok(appid) = get_manager_appid() {
+        push_manager_appid(&mut appids, appid);
+    }
+    if let Ok(managers) = get_managers() {
+        for manager in managers {
+            push_manager_appid(&mut appids, manager.appid);
+        }
+    }
+    appids
+}
+
+/// Some deployed kernels still restrict SET_APP_PROFILE to a Manager UID even
+/// though reads and the other management calls accept uid 0. The persistent
+/// Web Manager runs in ksud as root, so retry the one ioctl in a short-lived
+/// child carrying a registered Manager UID. The parent remains root and the
+/// child performs only async-signal-safe syscalls after fork.
+fn set_app_profile_as_manager(command: &mut ksu_uapi::ksu_set_app_profile_cmd) -> io::Result<()> {
+    let manager_appids = profile_write_manager_appids();
+    if manager_appids.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "kernel rejected the root caller and reported no registered Manager UID",
+        ));
+    }
+
+    let driver_fd = {
+        let fd = DRIVER_FD
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *fd
+    };
+    if driver_fd < 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::NotConnected,
+            "KernelSU driver fd is unavailable for Manager compatibility retry",
+        ));
+    }
+
+    for appid in manager_appids {
+        let child = unsafe { libc::fork() };
+        if child < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        if child == 0 {
+            let uid = appid as libc::uid_t;
+            let gid = appid as libc::gid_t;
+            let dropped = unsafe {
+                libc::setgroups(0, ptr::null::<libc::gid_t>()) == 0
+                    && libc::setresgid(gid, gid, gid) == 0
+                    && libc::setresuid(uid, uid, uid) == 0
+            };
+            if !dropped {
+                unsafe { libc::_exit(1) }
+            }
+            let result = unsafe {
+                libc::ioctl(
+                    driver_fd,
+                    ksu_uapi::KSU_IOCTL_SET_APP_PROFILE as libc::c_int,
+                    ptr::from_mut(command),
+                )
+            };
+            unsafe { libc::_exit(i32::from(result < 0)) }
+        }
+
+        let mut status = 0;
+        loop {
+            let waited = unsafe { libc::waitpid(child, &raw mut status, 0) };
+            if waited == child {
+                if libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0 {
+                    log::info!(
+                        "SET_APP_PROFILE accepted through Manager UID compatibility retry: {appid}"
+                    );
+                    return Ok(());
+                }
+                break;
+            }
+            if waited < 0 && io::Error::last_os_error().raw_os_error() == Some(libc::EINTR) {
+                continue;
+            }
+            break;
+        }
+    }
+
+    Err(io::Error::new(
+        io::ErrorKind::PermissionDenied,
+        "kernel rejected SET_APP_PROFILE for root and every registered Manager UID",
+    ))
+}
+
 pub fn set_root_access(package_name: &str, uid: u32, allow: bool) -> io::Result<()> {
     let current_uid = i32::try_from(uid)
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "uid is out of range"))?;
@@ -439,8 +540,18 @@ pub fn set_root_access(package_name: &str, uid: u32, allow: bool) -> io::Result<
     }
 
     let mut command = ksu_uapi::ksu_set_app_profile_cmd { profile };
-    ksuctl(ksu_uapi::KSU_IOCTL_SET_APP_PROFILE, &raw mut command)?;
-    Ok(())
+    match ksuctl(ksu_uapi::KSU_IOCTL_SET_APP_PROFILE, &raw mut command) {
+        Ok(_) => Ok(()),
+        Err(error) if error.raw_os_error() == Some(libc::EPERM) => {
+            set_app_profile_as_manager(&mut command).map_err(|fallback| {
+                io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    format!("{error}; Manager UID compatibility retry failed: {fallback}"),
+                )
+            })
+        }
+        Err(error) => Err(error),
+    }
 }
 
 pub fn is_late_load() -> bool {
@@ -899,8 +1010,6 @@ fn set_manager_appid_sysfs(appid: u32) -> std::io::Result<()> {
 pub fn set_manager_appid(appid: u32) -> std::io::Result<()> {
     use std::io;
 
-    const FIRST_APPLICATION_APPID: u32 = 10_000;
-    const LAST_APPLICATION_APPID: u32 = 19_999;
     if !(FIRST_APPLICATION_APPID..=LAST_APPLICATION_APPID).contains(&appid) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,

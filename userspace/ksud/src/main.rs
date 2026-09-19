@@ -78,6 +78,8 @@ mod unload;
 mod utils;
 #[cfg(target_os = "android")]
 mod web_manager;
+#[cfg(target_os = "android")]
+mod web_manager_susfs;
 
 fn main() -> anyhow::Result<()> {
     #[cfg(target_os = "android")]

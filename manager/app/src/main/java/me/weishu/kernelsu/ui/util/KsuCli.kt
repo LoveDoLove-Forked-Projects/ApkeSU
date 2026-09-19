@@ -440,6 +440,13 @@ data class RootDiagnosticInfo(
     val hiddenPathLkm: Boolean = false,
 )
 
+data class SeccompSelfCheckProbe(
+    val ksud: Boolean,
+    val rootShell: Boolean,
+    val moduleQuery: Boolean,
+    val failureReason: String = "",
+)
+
 data class InstalledKsudStatus(
     val present: Boolean = false,
     val versionCode: Int? = null,
@@ -751,7 +758,10 @@ fun execKsud(
 }
 
 /** Starts the persistent native web manager when the bundled ksud supports it. */
-fun startNativeWebManager(): Boolean = execKsud("web-manager start", newShell = true)
+fun startNativeWebManager(): Boolean {
+    syncNativeWebManagerAppCache()
+    return execKsud("web-manager start", newShell = true)
+}
 
 /** Enables or disables the persistent native web manager. */
 fun setNativeWebManagerEnabled(enabled: Boolean): Boolean =
@@ -2754,6 +2764,9 @@ private fun StringBuilder.appendTrustedSusfsToolDiscovery() {
     appendLine("  tool=\"${'$'}candidate\"")
     appendLine("  break")
     appendLine("done")
+    // Keep compatibility with the previous manager: SUSFS modules may expose
+    // ksu_susfs through the root shell PATH instead of a fixed directory.
+    appendLine("if [ -z \"${'$'}tool\" ]; then tool=\$(command -v ksu_susfs 2>/dev/null); fi")
 }
 
 internal fun validateSusfsConfig(config: SusfsPathConfigState): String {
@@ -2943,7 +2956,8 @@ suspend fun saveAndApplySusfsConfig(config: SusfsPathConfigState): SusfsPathAppl
         val refreshed = getSusfsPathConfig()
         val status = refreshed.runtimeStatus
         val stateMatches = status.generation == generation
-        val applied = stateMatches && isSusfsApplyStateSuccessful(status.state)
+        val applied = stateMatches && isSusfsApplyStateSuccessful(status.state) &&
+            !(status.state == "disabled" && status.failedCount > 0)
         return SusfsPathApplyResult(
             success = applied,
             saved = stateMatches,
@@ -3128,6 +3142,7 @@ find_tool() {
             break
         fi
     done
+    [ -n "${'$'}TOOL" ] || TOOL=${'$'}(command -v ksu_susfs 2>/dev/null)
     [ -x "${'$'}TOOL" ]
 }
 probe_tool() {
@@ -3248,22 +3263,28 @@ apply_kstats() {
 apply_settings() {
     enabled=${'$'}(read_setting enabled)
     [ -n "${'$'}enabled" ] || enabled=1
-    [ "${'$'}enabled" = "1" ] || return 0
     logging=${'$'}(read_setting logging)
     logging_value=0
-    [ "${'$'}logging" = "1" ] && logging_value=1
+    if [ "${'$'}enabled" = "1" ] && [ "${'$'}logging" = "1" ]; then logging_value=1; fi
     if feature_enabled "$SUSFS_LOG_FEATURE" || { [ "${'$'}FEATURE_PROBE_OK" -eq 0 ] && supports_version 10500; }; then
         run_tool logging "${'$'}logging_value" enable_log "${'$'}logging_value" || true
-    elif [ "${'$'}logging_value" -eq 1 ]; then
+    elif [ "${'$'}enabled" = "1" ] && [ "${'$'}logging_value" -eq 1 ]; then
         skip_entry logging "${'$'}logging_value" unsupported
     fi
     version_value=${'$'}(version_code 2>/dev/null || echo 0)
     if [ "${'$'}version_value" -ge 10503 ]; then
         avc=${'$'}(read_setting avc_log_spoofing)
         avc_value=0
-        [ "${'$'}avc" = "1" ] && avc_value=1
+        if [ "${'$'}enabled" = "1" ] && [ "${'$'}avc" = "1" ]; then avc_value=1; fi
         run_tool avc "${'$'}avc_value" enable_avc_log_spoofing "${'$'}avc_value" || true
     fi
+    hide_non=${'$'}(read_setting hide_sus_mnts_for_non_su_procs)
+    if feature_enabled "$SUSFS_MOUNT_FEATURE" || { [ "${'$'}FEATURE_PROBE_OK" -eq 0 ] && supports_version 10507; }; then
+        hide_value=0
+        if [ "${'$'}enabled" = "1" ] && [ "${'$'}hide_non" = "1" ]; then hide_value=1; fi
+        run_tool mount_visibility "${'$'}hide_value" hide_sus_mnts_for_non_su_procs "${'$'}hide_value" || true
+    fi
+    [ "${'$'}enabled" = "1" ] || return 0
     release=${'$'}(read_setting uname_release)
     build=${'$'}(read_setting uname_version)
     if [ -n "${'$'}release" ] || [ -n "${'$'}build" ]; then
@@ -3285,12 +3306,6 @@ apply_settings() {
         FAILED_COUNT=${'$'}((FAILED_COUNT + 1))
         record_issue failed cmdline "${'$'}cmdline" not_found
     fi
-    hide_non=${'$'}(read_setting hide_sus_mnts_for_non_su_procs)
-    if feature_enabled "$SUSFS_MOUNT_FEATURE" || { [ "${'$'}FEATURE_PROBE_OK" -eq 0 ] && supports_version 10507; }; then
-        hide_value=0
-        [ "${'$'}hide_non" = "1" ] && hide_value=1
-        run_tool mount_visibility "${'$'}hide_value" hide_sus_mnts_for_non_su_procs "${'$'}hide_value" || true
-    fi
 }
 
 resolve_config
@@ -3310,6 +3325,15 @@ while [ "${'$'}attempt" -lt "${'$'}MAX_ATTEMPTS" ]; do
     enabled=${'$'}(read_setting enabled)
     [ -z "${'$'}enabled" ] && enabled=1
     if [ "${'$'}enabled" != "1" ]; then
+        # SUSFS path entries and identity spoofing cannot be removed safely in
+        # the live kernel, but the three runtime switches below are reversible.
+        # Apply their disabled values before reporting the saved generation.
+        if [ -z "${'$'}TOOL" ]; then find_tool || true; fi
+        if [ -n "${'$'}TOOL" ]; then
+            probe_tool || true
+            generation_is_current || exit 0
+            apply_settings
+        fi
         write_status disabled "${'$'}(date +%s 2>/dev/null || echo 0)"
         exit 0
     fi
@@ -3769,6 +3793,50 @@ suspend fun listModulesWithTimeout(timeoutMillis: Long = SHELL_JOB_TIMEOUT_MILLI
     }
 
     return result.out.joinToString("\n").ifBlank { "[]" }
+}
+
+/** Run the three read-only checks required before trusting Seccomp filter mode. */
+suspend fun runSeccompSelfChecks(): SeccompSelfCheckProbe = withContext(Dispatchers.IO) {
+    fun detail(prefix: String, throwable: Throwable? = null): String {
+        val suffix = throwable?.message.orEmpty().replace(Regex("\\s+"), " ").trim()
+        return if (suffix.isBlank()) prefix else "$prefix: ${suffix.take(160)}"
+    }
+
+    val ksudFailure = runCatching {
+        val stdout = ArrayList<String>()
+        val stderr = ArrayList<String>()
+        val result = withNewRootShell {
+            if (!isRoot) return@withNewRootShell null
+            newJob()
+                .add("${shellQuote(getKsuDaemonPath())} debug userspace-version")
+                .to(stdout, stderr)
+                .exec()
+        }
+        check(result?.isSuccess == true) {
+            stderr.joinToString(" ").ifBlank { "ksud exited with ${result?.code ?: -1}" }
+        }
+        check(stdout.any { it.trim().startsWith("{") }) { "ksud returned no version" }
+        null
+    }.getOrElse { detail("ksud self-check failed", it) }
+
+    val rootShellFailure = runCatching {
+        check(rootAvailable()) { "root shell is not available" }
+        null
+    }.getOrElse { detail("root shell self-check failed", it) }
+
+    val moduleQueryFailure = runCatching {
+        val output = listModulesWithTimeout()
+        JSONArray(output)
+        null
+    }.getOrElse { detail("module query self-check failed", it) }
+
+    val failureReason = ksudFailure ?: rootShellFailure ?: moduleQueryFailure ?: ""
+    SeccompSelfCheckProbe(
+        ksud = ksudFailure == null,
+        rootShell = rootShellFailure == null,
+        moduleQuery = moduleQueryFailure == null,
+        failureReason = failureReason,
+    )
 }
 
 fun getModuleCount(): Int {

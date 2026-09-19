@@ -314,6 +314,10 @@ bool is_pr_build() {
     return false;
 }
 
+bool disable_current_seccomp() {
+    return ksuctl_scan_only(KSU_IOCTL_DISABLE_CURRENT_SECCOMP) == 0;
+}
+
 bool uid_should_umount(int uid) {
     struct ksu_uid_should_umount_cmd cmd = {};
     cmd.uid = uid;
@@ -362,6 +366,39 @@ static inline bool get_feature(uint32_t feature_id, uint64_t *out_value, bool *o
     if (out_value) *out_value = cmd.value;
     if (out_supported) *out_supported = cmd.supported;
     return true;
+}
+
+static uint64_t get_read_only_feature(uint32_t feature_id) {
+    uint64_t value = 0;
+    bool supported = false;
+    if (!get_feature(feature_id, &value, &supported) || !supported) {
+        return UINT64_MAX;
+    }
+    return value;
+}
+
+uint64_t get_gki_seccomp_hook_status() {
+    return get_read_only_feature(KSU_FEATURE_SECCOMP_HOOK_STATUS);
+}
+
+int32_t get_gki_seccomp_hook_last_error() {
+    uint64_t value = get_read_only_feature(KSU_FEATURE_SECCOMP_HOOK_LAST_ERROR);
+    if (value == UINT64_MAX) {
+        return INT32_MIN;
+    }
+    return static_cast<int32_t>(static_cast<int64_t>(value));
+}
+
+uint64_t get_gki_seccomp_hook_call_count() {
+    return get_read_only_feature(KSU_FEATURE_SECCOMP_HOOK_CALL_COUNT);
+}
+
+uint64_t get_gki_seccomp_hook_release_count() {
+    return get_read_only_feature(KSU_FEATURE_SECCOMP_HOOK_RELEASE_COUNT);
+}
+
+uint64_t get_gki_seccomp_hook_failure_count() {
+    return get_read_only_feature(KSU_FEATURE_SECCOMP_HOOK_FAILURE_COUNT);
 }
 
 static inline bool set_feature(uint32_t feature_id, uint64_t value) {

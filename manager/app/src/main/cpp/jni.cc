@@ -139,6 +139,12 @@ Java_me_weishu_kernelsu_Natives_isPrBuild(JNIEnv *env, jclass clazz) {
     return is_pr_build();
 }
 
+extern "C"
+JNIEXPORT jboolean JNICALL
+Java_me_weishu_kernelsu_Natives_disableCurrentSeccomp(JNIEnv *env, jobject thiz) {
+    return disable_current_seccomp();
+}
+
 static void fillIntArray(JNIEnv *env, jobject list, int *data, int count) {
     auto cls = env->GetObjectClass(list);
     auto add = env->GetMethodID(cls, "add", "(Ljava/lang/Object;)Z");
@@ -450,6 +456,36 @@ extern "C"
 JNIEXPORT jlong JNICALL
 Java_me_weishu_kernelsu_Natives_getKernelHookStatus(JNIEnv *env, jobject thiz) {
     return static_cast<jlong>(get_kernel_hook_status());
+}
+
+extern "C"
+JNIEXPORT jlong JNICALL
+Java_me_weishu_kernelsu_Natives_getGkiSeccompHookStatus(JNIEnv *env, jobject thiz) {
+    return static_cast<jlong>(get_gki_seccomp_hook_status());
+}
+
+extern "C"
+JNIEXPORT jint JNICALL
+Java_me_weishu_kernelsu_Natives_getGkiSeccompHookLastError(JNIEnv *env, jobject thiz) {
+    return static_cast<jint>(get_gki_seccomp_hook_last_error());
+}
+
+extern "C"
+JNIEXPORT jlong JNICALL
+Java_me_weishu_kernelsu_Natives_getGkiSeccompHookCallCount(JNIEnv *env, jobject thiz) {
+    return static_cast<jlong>(get_gki_seccomp_hook_call_count());
+}
+
+extern "C"
+JNIEXPORT jlong JNICALL
+Java_me_weishu_kernelsu_Natives_getGkiSeccompHookReleaseCount(JNIEnv *env, jobject thiz) {
+    return static_cast<jlong>(get_gki_seccomp_hook_release_count());
+}
+
+extern "C"
+JNIEXPORT jlong JNICALL
+Java_me_weishu_kernelsu_Natives_getGkiSeccompHookFailureCount(JNIEnv *env, jobject thiz) {
+    return static_cast<jlong>(get_gki_seccomp_hook_failure_count());
 }
 
 extern "C"

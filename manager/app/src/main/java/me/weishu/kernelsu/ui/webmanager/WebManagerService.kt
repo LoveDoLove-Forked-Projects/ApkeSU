@@ -17,47 +17,44 @@ import me.weishu.kernelsu.ui.util.getNativeWebManagerUrl
 import me.weishu.kernelsu.ui.util.startNativeWebManager
 
 class WebManagerService : Service() {
+    @Volatile
     private var nativeManaged = false
+
+    @Volatile
+    private var destroyed = false
+
+    private val startupLock = Any()
+    private var startupThread: Thread? = null
 
     override fun onCreate() {
         super.onCreate()
-        nativeManaged = runCatching { getNativeWebManagerUrl() != null }.getOrDefault(false)
-        if (nativeManaged) {
-            stopSelf()
-            return
-        }
         runCatching {
             createNotificationChannel()
-            // 先启动服务拿到实际端口，通知里才能显示正确的访问地址
-            WebManagerServer.start()
-            startForegroundCompat()
+            // Android requires this before any potentially blocking Root or
+            // server probe. Delaying it caused ForegroundServiceDidNotStartInTimeException.
+            startForegroundCompat(null)
         }.onFailure {
-            Log.e(TAG, "failed to start web manager service", it)
+            Log.e(TAG, "failed to enter foreground for web manager service", it)
             stopSelf()
         }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if (nativeManaged || runCatching { getNativeWebManagerUrl() != null }.getOrDefault(false)) {
-            stopSelfResult(startId)
-            return START_NOT_STICKY
-        }
         if (intent == null && !WebManagerPreferences.isAutoStartEnabled(this)) {
             stopSelfResult(startId)
             return START_NOT_STICKY
         }
-        runCatching { WebManagerServer.start() }
-            .onFailure {
-                Log.e(TAG, "failed to ensure web manager server is running", it)
-                stopSelfResult(startId)
-            }
+        ensureServerStarted()
         return if (WebManagerPreferences.isAutoStartEnabled(this)) START_STICKY else START_NOT_STICKY
     }
 
     override fun onDestroy() {
+        destroyed = true
+        startupThread?.interrupt()
         if (!nativeManaged) {
             WebManagerServer.stop()
         }
+        stopForeground(STOP_FOREGROUND_REMOVE)
         super.onDestroy()
     }
 
@@ -75,14 +72,65 @@ class WebManagerService : Service() {
         }
     }
 
-    private fun startForegroundCompat() {
-        val notification: Notification = NotificationCompat.Builder(this, CHANNEL_ID)
+    private fun ensureServerStarted() {
+        synchronized(startupLock) {
+            if (nativeManaged || startupThread?.isAlive == true) return
+            startupThread = Thread({
+                try {
+                    val nativeUrl = runCatching { getNativeWebManagerUrl() }.getOrNull()
+                    if (destroyed) return@Thread
+                    if (nativeUrl != null) {
+                        nativeManaged = true
+                        stopForeground(STOP_FOREGROUND_REMOVE)
+                        stopSelf()
+                        return@Thread
+                    }
+
+                    WebManagerServer.start()
+                    if (destroyed) {
+                        WebManagerServer.stop()
+                        return@Thread
+                    }
+                    updateForegroundNotification(WebManagerServer.port())
+                } catch (error: Throwable) {
+                    Log.e(TAG, "failed to start web manager service", error)
+                    if (!destroyed) stopSelf()
+                } finally {
+                    synchronized(startupLock) {
+                        startupThread = null
+                    }
+                }
+            }, "ApkeSU-WebManager-Startup").apply {
+                isDaemon = true
+                start()
+            }
+        }
+    }
+
+    private fun buildNotification(port: Int?): Notification {
+        val text = if (port != null && port > 0) {
+            getString(R.string.web_manager_notification_text, port)
+        } else {
+            getString(R.string.web_manager_notification_starting)
+        }
+        return NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(android.R.drawable.stat_sys_upload)
             .setContentTitle(getString(R.string.web_manager_notification_title))
-            .setContentText(getString(R.string.web_manager_notification_text, WebManagerServer.port()))
+            .setContentText(text)
             .setOngoing(true)
             .setCategory(NotificationCompat.CATEGORY_SERVICE)
             .build()
+    }
+
+    private fun updateForegroundNotification(port: Int) {
+        getSystemService(NotificationManager::class.java).notify(
+            NOTIFICATION_ID,
+            buildNotification(port),
+        )
+    }
+
+    private fun startForegroundCompat(port: Int?) {
+        val notification = buildNotification(port)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
             startForeground(
                 NOTIFICATION_ID,

@@ -17,6 +17,8 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.animation.AnimatedContentTransitionScope
 import androidx.compose.animation.ContentTransform
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.ExitTransition
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.FastOutLinearInEasing
 import androidx.compose.animation.core.LinearOutSlowInEasing
@@ -275,6 +277,7 @@ import me.weishu.kernelsu.ui.webui.WebUIActivity
 import me.weishu.kernelsu.ui.util.CustomBackgroundState
 import me.weishu.kernelsu.ui.util.CustomPageBackgroundTarget
 import me.weishu.kernelsu.ui.util.AppLanguageManager
+import me.weishu.kernelsu.stealth.StealthModeStore
 import top.yukonga.miuix.kmp.basic.Scaffold
 import top.yukonga.miuix.kmp.blur.layerBackdrop
 import top.yukonga.miuix.kmp.blur.rememberLayerBackdrop
@@ -517,30 +520,58 @@ class MainActivity : ComponentActivity() {
                     appFontState = uiState.appFont,
                     uiMode = uiMode,
                 ) {
-                    HandleDeepLink(intentState = intentState.collectAsStateWithLifecycle())
-                    ManagerUpdatePrompt()
-                    ZipFileIntentHandler(intentState = intentState, isManager = managerReady)
-                    ShortcutIntentHandler(intentState = intentState)
-                    val mainPagerPageCount = remember { mutableIntStateOf(4) }
+                    if (!uiState.stealthModeResolved) {
+                        Box(modifier = Modifier.fillMaxSize())
+                        return@KernelSUTheme
+                    }
+                    if (!uiState.stealthModeEnabled) {
+                        HandleDeepLink(intentState = intentState.collectAsStateWithLifecycle())
+                        ManagerUpdatePrompt()
+                        ZipFileIntentHandler(intentState = intentState, isManager = managerReady)
+                        ShortcutIntentHandler(intentState = intentState)
+                    }
+                    val mainPagerPageCount = remember {
+                        mutableIntStateOf(
+                            mainDestinations(
+                                kpmActive = false,
+                                stealthModeEnabled = uiState.stealthModeEnabled,
+                            ).size
+                        )
+                    }
                     val mainPagerState = rememberMainPagerState(
                         pagerState = rememberPagerState(
-                            initialPage = mainDestinations(kpmActive = false)
+                            initialPage = mainDestinations(
+                                kpmActive = false,
+                                stealthModeEnabled = uiState.stealthModeEnabled,
+                            )
                                 .indexOf(selectedMainDestination)
                                 .coerceAtLeast(0),
                             pageCount = { mainPagerPageCount.intValue },
                         ),
                         pageCountState = mainPagerPageCount,
                         restoredDestination = selectedMainDestination,
+                        initialStealthModeEnabled = uiState.stealthModeEnabled,
                     )
                     val mainScreenEntry = @Composable {
                         MainScreen(
                             onDestinationChanged = viewModel::setSelectedMainDestination,
                             mainPagerState = mainPagerState,
+                            stealthModeEnabled = uiState.stealthModeEnabled,
                         )
                     }
 
+                    LaunchedEffect(uiState.stealthModeEnabled) {
+                        if (uiState.stealthModeEnabled) {
+                            viewModel.setSelectedMainDestination(MainDestination.Home)
+                            navigator.replaceAll(listOf(Route.Main))
+                        }
+                    }
+
                     val navDisplay = @Composable {
-                        NavDisplay(
+                        if (uiState.stealthModeEnabled) {
+                            mainScreenEntry()
+                        } else {
+                            NavDisplay(
                             modifier = Modifier.fillMaxSize(),
                             backStack = navigator.backStack,
                             entryDecorators = listOf(
@@ -652,22 +683,38 @@ class MainActivity : ComponentActivity() {
                                 entry<Route.Module> { mainScreenEntry() }
                                 entry<Route.Settings> { mainScreenEntry() }
                             },
-                            transitionSpec = stableNavForwardTransition(),
-                            popTransitionSpec = stableNavPopTransition(),
-                            predictivePopTransitionSpec = { _ -> stableNavPopTransitionContentTransform() },
+                            transitionSpec = if (shouldUseLayeredNavigationTransitions(mainPagerState.kpmActive)) {
+                                stableNavForwardTransition()
+                            } else {
+                                instantNavTransition()
+                            },
+                            popTransitionSpec = if (shouldUseLayeredNavigationTransitions(mainPagerState.kpmActive)) {
+                                stableNavPopTransition()
+                            } else {
+                                instantNavTransition()
+                            },
+                            predictivePopTransitionSpec = { _ ->
+                                if (shouldUseLayeredNavigationTransitions(mainPagerState.kpmActive)) {
+                                    stableNavPopTransitionContentTransform()
+                                } else {
+                                    instantNavTransitionContentTransform()
+                                }
+                            },
                             transitionEffects = NavDisplayTransitionEffects(
                                 enableCornerClip = false,
                                 dimAmount = 0f,
                                 blockInputDuringTransition = true,
                                 popDirectionFollowsSwipeEdge = true,
                             ),
-                        )
+                            )
+                        }
                     }
                     val globalGlassBackdrop = rememberBlurBackdrop(effectiveEnableBlur)
                     // KPM owns an Android WebView. During a route transition the old
                     // MainScreen can remain composed briefly, so keep it out of the
                     // global backdrop even after SettingsCategory becomes current.
-                    val kpmWebViewSurfaceActive = currentRoute == Route.Kpm || mainPagerState.kpmActive
+                    val kpmWebViewSurfaceActive = currentRoute == Route.Kpm ||
+                        (mainPagerState.kpmActive && !uiState.stealthModeEnabled)
                     var routeInitialized by remember { mutableStateOf(false) }
                     var navigationTransitionActive by remember { mutableStateOf(false) }
                     LaunchedEffect(currentRoute) {
@@ -686,7 +733,10 @@ class MainActivity : ComponentActivity() {
                     val pagerBackgrounds = if (
                         uiState.backgroundScrollFollowEnabled && currentRoute.hostsMainPager()
                     ) {
-                        uiState.mainPagerBackgrounds(mainPagerState.kpmActive)
+                        uiState.mainPagerBackgrounds(
+                            mainPagerState.kpmActive,
+                            uiState.stealthModeEnabled,
+                        )
                     } else {
                         emptyList()
                     }
@@ -845,6 +895,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onStart() {
         super.onStart()
+        StealthModeStore.reconcileFromRootAsync(this)
         StartupSoundPlayer.playConfigured(this)
         BackgroundMusicPlayer.playConfigured(this)
     }
@@ -893,8 +944,11 @@ internal fun customPageBackgroundTarget(route: Route?): CustomPageBackgroundTarg
     }
 }
 
-private fun MainActivityUiState.mainPagerBackgrounds(kpmActive: Boolean): List<CustomBackgroundState> {
-    return mainDestinations(kpmActive).map(::customBackgroundForMainDestination)
+private fun MainActivityUiState.mainPagerBackgrounds(
+    kpmActive: Boolean,
+    stealthModeEnabled: Boolean,
+): List<CustomBackgroundState> {
+    return mainDestinations(kpmActive, stealthModeEnabled).map(::customBackgroundForMainDestination)
 }
 
 private fun MainActivityUiState.customBackgroundForMainDestination(
@@ -1062,6 +1116,18 @@ private fun <T : Any> stableNavPopTransition(): AnimatedContentTransitionScope<S
     stableNavPopTransitionContentTransform()
 }
 
+private fun <T : Any> instantNavTransition(): AnimatedContentTransitionScope<Scene<T>>.() -> ContentTransform = {
+    instantNavTransitionContentTransform()
+}
+
+private fun instantNavTransitionContentTransform(): ContentTransform {
+    return ContentTransform(
+        targetContentEnter = EnterTransition.None,
+        initialContentExit = ExitTransition.None,
+        sizeTransform = null,
+    )
+}
+
 private fun stableNavForwardTransitionContentTransform(): ContentTransform {
     return ContentTransform(
         targetContentEnter = fadeIn(
@@ -1139,6 +1205,7 @@ private fun resolveUiDecorationScope(
 fun MainScreen(
     onDestinationChanged: (MainDestination) -> Unit = {},
     mainPagerState: MainPagerState,
+    stealthModeEnabled: Boolean = false,
 ) {
     val navController = LocalNavigator.current
     val enableBlur = LocalEnableBlur.current
@@ -1206,17 +1273,17 @@ fun MainScreen(
     // The pager owns the committed page topology. The async probe only feeds it;
     // using the probe result directly here can render a page with the old index
     // while the pager is still reconfiguring its page count.
-    val kpmPageActive = mainPagerState.kpmActive
+    val kpmPageActive = mainPagerState.kpmActive && !stealthModeEnabled
     val moduleViewModel = viewModel<ModuleViewModel>()
     val moduleUiState by moduleViewModel.uiState.collectAsStateWithLifecycle()
     LaunchedEffect(isFullFeatured) {
-        if (isFullFeatured && moduleViewModel.uiState.value.moduleList.isEmpty()) {
+        if (isFullFeatured && !stealthModeEnabled && moduleViewModel.uiState.value.moduleList.isEmpty()) {
             moduleViewModel.initializePreferences()
             moduleViewModel.fetchModuleList(checkUpdate = true, resort = false)
         }
     }
     val superuserCount by produceState(initialValue = 0, isFullFeatured, refreshTick) {
-        value = if (isFullFeatured) {
+        value = if (isFullFeatured && !stealthModeEnabled) {
             kotlinx.coroutines.withContext(Dispatchers.IO) {
                 runCatching { getSuperuserCount() }.getOrDefault(0)
             }
@@ -1253,6 +1320,9 @@ fun MainScreen(
     }
     LaunchedEffect(kpmPageActiveResult) {
         mainPagerState.updateKpmAvailability(kpmPageActiveResult.asBooleanOrNull())
+    }
+    LaunchedEffect(stealthModeEnabled) {
+        mainPagerState.updateStealthMode(stealthModeEnabled)
     }
     LaunchedEffect(kpmDisableTick) {
         if (kpmDisableTick > 0) {
@@ -1320,7 +1390,10 @@ fun MainScreen(
                     userScrollEnabled = userScrollEnabled,
                 ) { page ->
                     val isCurrentPage = page == settledPage
-                    val destination = mainDestinations(kpmPageActive).getOrNull(page)
+                    val destination = mainDestinations(
+                        kpmActive = mainPagerState.kpmActive,
+                        stealthModeEnabled = stealthModeEnabled,
+                    ).getOrNull(page)
                     val containsKpmWebView = destination == MainDestination.Kpm
                     Box(
                         modifier = Modifier
@@ -1347,6 +1420,7 @@ fun MainScreen(
                                     navController,
                                     bottomInnerPadding,
                                     isCurrentPage,
+                                    stealthModeEnabled,
                                 )
 
                                 MainDestination.Kpm -> KpmScreen(
@@ -1490,11 +1564,19 @@ internal fun shouldShowKpmPage(status: KPatchNextStatus?): Boolean {
     } == true
 }
 
+internal fun shouldUseLayeredNavigationTransitions(kpmPageActive: Boolean): Boolean {
+    // NavDisplay animates its outgoing scene through a render layer. If the main
+    // pager retains KPM's WebView, HWUI can crash in GLFunctorDrawable while that
+    // layer is rendered, even when KPM is not the currently selected main page.
+    return !kpmPageActive
+}
+
 internal fun shouldReturnMainPagerBackToHome(
     selectedPage: Int,
     kpmActive: Boolean = false,
+    stealthModeEnabled: Boolean = false,
 ): Boolean {
-    return when (mainDestinations(kpmActive).getOrNull(selectedPage)) {
+    return when (mainDestinations(kpmActive, stealthModeEnabled).getOrNull(selectedPage)) {
         MainDestination.Kpm,
         MainDestination.Module,
         MainDestination.Settings,
@@ -1516,6 +1598,7 @@ private fun MainScreenBackHandler(
                 shouldReturnMainPagerBackToHome(
                     selectedPage = mainState.selectedPage,
                     kpmActive = mainState.kpmActive,
+                    stealthModeEnabled = mainState.stealthModeEnabled,
                 )
         }
     }

@@ -299,6 +299,34 @@
             </intent-filter>
         </receiver>
 
+        <receiver
+            android:name=".stealth.SecretCodeReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.provider.Telephony.SECRET_CODE" />
+                <action android:name="android.telephony.action.SECRET_CODE" />
+
+                <data android:scheme="android_secret_code" />
+            </intent-filter>
+        </receiver>
+
+        <receiver
+            android:name=".stealth.StealthModeSyncReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="me.weishu.kernelsu.action.STEALTH_MODE_DISABLED" />
+                <action android:name="me.weishu.kernelsu.action.STEALTH_MODE_CHANGED" />
+            </intent-filter>
+        </receiver>
+
+        <receiver
+            android:name=".ui.webmanager.ManagerAppSettingsSyncReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="me.weishu.kernelsu.action.MANAGER_SETTINGS_CHANGED" />
+            </intent-filter>
+        </receiver>
+
     </application>
 
 </manifest>

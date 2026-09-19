@@ -21,6 +21,7 @@
 #include "runtime/ksud_boot.h"
 #include "feature/dynamic_manager.h"
 #include "feature/kernel_umount.h"
+#include "feature/seccomp_hook.h"
 #include "manager/manager_identity.h"
 #include "manager/throne_tracker.h"
 #include "selinux/selinux.h"
@@ -907,6 +908,11 @@ static int do_disable_escape_to_root(void __user *arg)
     return 0;
 }
 
+static int do_disable_current_seccomp(void __user *arg)
+{
+    return ksu_disable_current_seccomp();
+}
+
 static int do_enable_kpm(void __user *arg)
 {
     struct ksu_enable_kpm_cmd cmd = {
@@ -1099,13 +1105,13 @@ static const struct ksu_ioctl_cmd_map ksu_ioctl_handlers[] = {
         .cmd = KSU_IOCTL_GET_APP_PROFILE,
         .name = "GET_APP_PROFILE",
         .handler = do_get_app_profile,
-        .perm_check = only_manager
+        .perm_check = manager_or_root
     },
     {
         .cmd = KSU_IOCTL_SET_APP_PROFILE,
         .name = "SET_APP_PROFILE",
         .handler = do_set_app_profile,
-        .perm_check = only_manager
+        .perm_check = manager_or_root
     },
     {
         .cmd = KSU_IOCTL_GET_FEATURE,
@@ -1168,6 +1174,12 @@ static const struct ksu_ioctl_cmd_map ksu_ioctl_handlers[] = {
         .name = "SET_MANAGER_APPID",
         .handler = do_set_manager_appid,
         .perm_check = only_root
+    },
+    {
+        .cmd = KSU_IOCTL_DISABLE_CURRENT_SECCOMP,
+        .name = "DISABLE_CURRENT_SECCOMP",
+        .handler = do_disable_current_seccomp,
+        .perm_check = only_manager
     },
     {
         .cmd = KSU_IOCTL_DYNAMIC_MANAGER,

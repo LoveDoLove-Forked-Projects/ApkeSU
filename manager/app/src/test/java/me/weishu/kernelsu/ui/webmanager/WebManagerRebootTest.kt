@@ -49,4 +49,15 @@ class WebManagerRebootTest {
         assertTrue(WEB_MANAGER_PAGE.contains("data-reboot-mode"))
         assertFalse(WEB_MANAGER_PAGE.contains("id=\"softRebootBtn\""))
     }
+
+    @Test
+    fun webPageCanEnableDisableAndConfigureStealthMode() {
+        assertTrue(WEB_MANAGER_PAGE.contains("id=\"stealthToggle\""))
+        assertTrue(WEB_MANAGER_PAGE.contains("id=\"stealthCodeEdit\""))
+        assertTrue(WEB_MANAGER_PAGE.contains("/api/stealth"))
+        assertTrue(WEB_MANAGER_PAGE.contains("enabled: enableAfterSave"))
+        assertTrue(WEB_MANAGER_PAGE.contains("id=\"stealthDisableCode\""))
+        assertTrue(WEB_MANAGER_PAGE.contains("{ enabled: false, code: code }"))
+        assertFalse(WEB_MANAGER_PAGE.contains("{ enabled: false },"))
+    }
 }

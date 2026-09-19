@@ -2,23 +2,296 @@
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <title>ApkeSU 网页管理器</title>
-  <link rel="stylesheet" href="/style.css">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta id="pwa-theme-color" name="theme-color" content="#f5f5f7">
+  <meta name="color-scheme" content="light dark">
+  <meta name="application-name" content="ApkeSU Web">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta id="apple-status-bar-style" name="apple-mobile-web-app-status-bar-style" content="default">
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="icon" href="/pwa-icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/pwa-icon-192.png">
+  <title>ApkeSU</title>
+  <link rel="stylesheet" href="/style.css?v=11">
 </head>
-<body>
+<body data-current-view="home">
   <header class="topbar">
-    <div><span class="eyebrow">ApkeSU</span><h1 id="page-title">概览</h1></div>
-    <button id="refresh" class="icon-button" title="刷新" aria-label="刷新">↻</button>
+    <div class="topbar-inner">
+      <div class="brand"><b>ApkeSU</b></div>
+      <span id="status-pill" class="pill hidden" aria-hidden="true"></span>
+      <span id="brand-sub" class="hidden" aria-hidden="true"></span>
+      <button id="susfs-shortcut-button" class="top-action hidden" type="button" title="打开 SUSFS 管理" aria-label="打开 GKI SUSFS 管理">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 5.5 5.7v5.8c0 4.2 2.6 7.7 6.5 9.5 3.9-1.8 6.5-5.3 6.5-9.5V5.7L12 3Z"/><path d="M9.2 12.1 11 14l3.9-4.2"/></svg>
+        <span>SUSFS</span>
+      </button>
+      <button id="reboot-button" class="iconbtn" type="button" title="重启" aria-label="重启菜单" aria-haspopup="menu" aria-expanded="false">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2.8v8.4"/><path d="M6.4 6.4a8 8 0 1 0 11.2 0"/></svg>
+      </button>
+    </div>
+    <div id="reboot-menu" class="popup hidden" role="menu" aria-label="重启"></div>
   </header>
-  <main id="app" class="shell">
-    <section id="overview" class="page active"><div id="status-grid" class="grid"></div><div id="device-card" class="panel"></div></section>
-    <section id="modules" class="page"><div class="section-head"><div><h2>模块</h2><p>管理已安装的模块和操作脚本</p></div><button id="modules-refresh" class="secondary">刷新</button></div><div id="module-list" class="list"></div></section>
-    <section id="superuser" class="page"><div class="section-head"><div><h2>超级用户</h2><p>按应用包名和 UID 管理授权</p></div><button id="su-refresh" class="secondary">刷新</button></div><div id="su-list" class="list"></div></section>
-    <section id="settings" class="page"><div class="section-head"><div><h2>设置</h2><p>网页管理器由 ksud 持久运行，卸载 APK 后仍可访问</p></div></div><div id="settings-card" class="panel"></div><div class="panel danger-panel"><h3>安全</h3><p>令牌只通过管理器生成的本机链接使用。需要轮换令牌时，请在 root shell 执行 <code>ksud web-manager rotate-token</code>，旧链接会立即失效。</p></div></section>
+
+  <nav class="tabs" aria-label="页面导航">
+    <button class="tab active" type="button" data-view="home" data-icon-slot="home"><span class="nav-ico" aria-hidden="true">⌂</span>主页</button>
+    <button class="tab" type="button" data-view="superuser" data-icon-slot="superuser"><span class="nav-ico" aria-hidden="true">✓</span>超级用户<span id="desktop-su-count" class="tab-count">0</span></button>
+    <button class="tab" type="button" data-view="modules" data-icon-slot="module"><span class="nav-ico" aria-hidden="true">▤</span>模块<span id="desktop-module-count" class="tab-count">0</span></button>
+    <button class="tab" type="button" data-view="tools" data-icon-slot="kpm"><span class="nav-ico" aria-hidden="true">◇</span><span data-tools-label>工具</span></button>
+    <button class="tab" type="button" data-view="settings" data-icon-slot="settings"><span class="nav-ico" aria-hidden="true">⚙</span>设置</button>
+  </nav>
+
+  <main class="wrap">
+    <section id="view-home" class="view active" data-page="home">
+      <button id="lkm-card" class="lkm-card" data-tone="ok" type="button" aria-label="刷新内核状态">
+        <span id="lkm-watermark" class="lkm-watermark" aria-hidden="true">✓</span>
+        <span class="lkm-content">
+          <span id="lkm-bubble" class="lkm-bubble" aria-hidden="true">✓</span>
+          <span id="kernel-state" class="lkm-title">读取内核状态……</span>
+          <span class="lkm-tags"><span id="kernel-mode-tag" class="lkm-tag">-</span><span id="kernel-extra-tag" class="lkm-tag hidden"></span></span>
+          <span id="kernel-sub" class="lkm-sub">已安装版本：-</span>
+        </span>
+      </button>
+
+      <div class="metrics" aria-live="polite">
+        <button id="superuser-card" class="metric" type="button" data-go="superuser">
+          <span class="metric-title">超级用户</span>
+          <span id="home-su-count" class="metric-value">-</span>
+        </button>
+        <button id="module-card" class="metric" type="button" data-go="modules">
+          <span class="metric-title">模块</span>
+          <span id="home-module-count" class="metric-value">-</span>
+        </button>
+      </div>
+
+      <div id="home-warning" class="warning-card hidden" role="status">
+        <div class="warning-line">
+          <span class="warning-icon" aria-hidden="true">!</span>
+          <span class="warning-copy"><b>需要注意</b><small id="home-warning-detail"></small></span>
+        </div>
+        <div id="home-warning-extra" class="warning-extra hidden"></div>
+        <button id="home-warning-toggle" class="warning-toggle hidden" type="button">还有 1 条</button>
+      </div>
+
+      <div id="device-card" class="card info-card" aria-live="polite">
+        <div id="status-monitor" class="monitor">
+          <div class="monitor-line" data-tone="ok">
+            <span class="monitor-icon" aria-hidden="true">🛡</span>
+            <span class="monitor-label">SELinux 状态</span>
+            <span class="monitor-end"><span id="selinux-dot" class="monitor-dot" aria-hidden="true"></span><span id="selinux-value" class="monitor-value">-</span></span>
+          </div>
+          <div class="monitor-line" data-tone="ok">
+            <span class="monitor-icon" aria-hidden="true">🔒</span>
+            <span class="monitor-label">Seccomp 状态</span>
+            <span class="monitor-end"><span id="seccomp-dot" class="monitor-dot" aria-hidden="true"></span><span id="seccomp-value" class="monitor-value">-</span></span>
+          </div>
+        </div>
+        <div class="info-divider" aria-hidden="true"></div>
+        <div id="info-rows" class="info-rows">
+          <div class="info-row"><div class="info-main"><div class="info-label">管理器版本</div><div class="info-value" id="info-manager">-</div></div></div>
+          <div class="info-row"><div class="info-main"><div class="info-label">设备型号</div><div class="info-value" id="info-model">-</div></div></div>
+          <div class="info-row"><div class="info-main"><div class="info-label">内核版本</div><div class="info-value" id="info-kernel">-</div></div></div>
+          <div class="info-row"><div class="info-main"><div class="info-label">钩子类型</div><div class="info-value" id="info-hook">-</div></div></div>
+          <div class="info-row"><div class="info-main"><div class="info-label">系统指纹</div><div class="info-value" id="info-fingerprint">-</div></div></div>
+        </div>
+      </div>
+
+      <div class="card link-card">
+        <a class="home-link" href="https://patreon.com/weishu" target="_blank" rel="noopener noreferrer">
+          <span class="link-icon" aria-hidden="true">♥</span>
+          <span class="link-copy"><b>支持开发</b><small>ApkeSU 将保持免费开源，向开发者捐赠以表示支持</small></span>
+          <span class="chevron" aria-hidden="true">›</span>
+        </a>
+        <a class="home-link" href="https://github.com/fixz232/ApkeSU.git" target="_blank" rel="noopener noreferrer">
+          <span class="link-icon" aria-hidden="true">i</span>
+          <span class="link-copy"><b>了解 ApkeSU</b><small>了解安装步骤与模块开发指南</small></span>
+          <span class="chevron" aria-hidden="true">›</span>
+        </a>
+      </div>
+    </section>
+
+    <section id="view-superuser" class="view" data-page="superuser" hidden>
+      <div class="page-head">
+        <div class="page-title"><h1>超级用户</h1><p id="superuser-summary" class="sub">正在读取应用列表……</p></div>
+        <button class="btn small" type="button" data-retry="superuser">刷新</button>
+      </div>
+      <div class="toolbar">
+        <label class="search"><span aria-hidden="true">⌕</span><input id="superuser-search" type="search" autocomplete="off" placeholder="搜索应用或 UID" aria-label="搜索超级用户应用"></label>
+        <select id="superuser-filter" aria-label="筛选授权状态"><option value="all">全部应用</option><option value="granted">已授权</option><option value="denied">未授权</option></select>
+      </div>
+      <div id="superuser-list" class="list" aria-live="polite"><div class="state"><b>正在读取应用列表</b>首次读取可能需要几秒。</div></div>
+    </section>
+
+    <section id="view-modules" class="view" data-page="modules" hidden>
+      <div class="page-head">
+        <div class="page-title"><h1>模块</h1><p id="module-summary" class="sub">正在读取模块列表……</p></div>
+        <button class="btn small" type="button" data-retry="modules">刷新</button>
+      </div>
+      <div class="toolbar">
+        <label class="search"><span aria-hidden="true">⌕</span><input id="module-search" type="search" autocomplete="off" placeholder="搜索模块名称或 ID" aria-label="搜索模块"></label>
+        <select id="module-filter" aria-label="筛选模块"><option value="all">全部模块</option><option value="enabled">已启用</option><option value="disabled">已停用</option><option value="webui">有 WebUI</option><option value="remove">待卸载</option></select>
+      </div>
+      <div id="module-list" class="list" aria-live="polite"><div class="state"><b>正在读取模块列表</b>请稍候……</div></div>
+    </section>
+
+    <section id="view-tools" class="view" data-page="tools" hidden>
+      <div class="page-head"><div><h1>内核工具</h1><p id="tools-summary" class="sub">正在识别运行模式与可用能力……</p></div><button class="btn small" type="button" data-retry="tools">刷新</button></div>
+      <div id="tools-runtime" class="notice"><b>正在读取内核能力</b><span>KPM、SUSFS、PathMask 与挂载功能只会在真实支持时开放。</span></div>
+
+      <section id="kpm-panel" class="tool-section" aria-labelledby="kpm-heading">
+        <div class="section-head"><div><h2 id="kpm-heading">KPM 管理</h2><p id="kpm-detail" class="sub">GKI 使用原生加载器，LKM 使用 KPatch-Next 后端</p></div><label class="toggle"><input id="kpm-policy" type="checkbox" aria-label="KPM 策略"><span></span></label></div>
+        <div class="card tool-card">
+          <div class="tool-form-row">
+            <label class="file-field"><span>KPM 文件</span><input id="kpm-file" type="file" accept=".kpm,.elf,application/octet-stream"></label>
+            <label class="form-field grow"><span>加载参数</span><input id="kpm-args" type="text" maxlength="4096" autocomplete="off" placeholder="可选参数"></label>
+          </div>
+          <div class="tool-actions">
+            <label class="check-field"><input id="kpm-import-enable" type="checkbox" checked> 导入后启用并加载</label>
+            <button id="kpm-import" class="btn primary" type="button">导入 KPM</button>
+          </div>
+        </div>
+        <div id="kpm-list" class="list" aria-live="polite"><div class="state"><b>正在读取 KPM</b>请稍候……</div></div>
+      </section>
+
+      <section id="susfs-panel" class="tool-section hidden" aria-labelledby="susfs-heading" tabindex="-1">
+        <div class="section-head"><div><h2 id="susfs-heading">SUSFS 管理</h2><p id="susfs-detail" class="sub">GKI 路径隐藏、映射与伪装配置</p></div><span id="susfs-state" class="badge">读取中</span></div>
+        <div class="card tool-card">
+          <div class="switch-grid">
+            <label class="switch-row"><span><b>启用配置</b><small>立即应用支持的项目</small></span><span class="toggle"><input id="susfs-enabled" type="checkbox"><span></span></span></label>
+            <label class="switch-row"><span><b>SUSFS 日志</b><small>记录内核侧调试信息</small></span><span class="toggle"><input id="susfs-logging" type="checkbox"><span></span></span></label>
+            <label class="switch-row"><span><b>AVC 日志伪装</b><small>隐藏相关 AVC 特征</small></span><span class="toggle"><input id="susfs-avc" type="checkbox"><span></span></span></label>
+            <label class="switch-row"><span><b>隐藏 SUSFS 挂载</b><small>对非 Root 进程隐藏挂载</small></span><span class="toggle"><input id="susfs-hide-mounts" type="checkbox"><span></span></span></label>
+          </div>
+          <div class="form-grid">
+            <label class="form-field"><span>隐藏路径（每行一条）</span><textarea id="susfs-paths" rows="5" spellcheck="false" placeholder="/data/local/tmp/example"></textarea></label>
+            <label class="form-field"><span>循环隐藏路径（每行一条）</span><textarea id="susfs-loop-paths" rows="5" spellcheck="false"></textarea></label>
+            <label class="form-field"><span>SUS 映射（每行一条）</span><textarea id="susfs-maps" rows="4" spellcheck="false"></textarea></label>
+          </div>
+          <details class="advanced"><summary>高级伪装配置</summary>
+            <div class="form-grid">
+              <label class="form-field"><span>Open Redirect：源|目标|UID 方案</span><textarea id="susfs-redirects" rows="4" spellcheck="false"></textarea></label>
+              <label class="form-field"><span>静态 Kstat：每行 13 个 | 分隔参数</span><textarea id="susfs-kstats" rows="4" spellcheck="false"></textarea></label>
+              <label class="form-field"><span>Uname release</span><input id="susfs-uname-release" type="text" maxlength="4096"></label>
+              <label class="form-field"><span>Uname version</span><input id="susfs-uname-version" type="text" maxlength="4096"></label>
+              <label class="form-field"><span>Cmdline / bootconfig 文件</span><input id="susfs-cmdline" type="text" maxlength="4096" placeholder="绝对路径"></label>
+            </div>
+          </details>
+          <div class="tool-actions end"><button id="susfs-save" class="btn primary" type="button">保存并应用</button></div>
+        </div>
+      </section>
+
+      <section id="pathmask-panel" class="tool-section hidden" aria-labelledby="pathmask-heading">
+        <div class="section-head"><div><h2 id="pathmask-heading">PathMask</h2><p id="pathmask-detail" class="sub">LKM 路径隐藏与应用范围</p></div><span id="pathmask-state" class="badge">读取中</span></div>
+        <div class="card tool-card">
+          <div class="form-grid">
+            <label class="form-field"><span>目标路径（每行一条）</span><textarea id="pathmask-paths" rows="6" spellcheck="false"></textarea></label>
+            <label class="form-field"><span>应用包名（每行一条）</span><textarea id="pathmask-apps" rows="6" spellcheck="false" placeholder="com.example.app"></textarea></label>
+          </div>
+          <div class="switch-grid">
+            <label class="switch-row"><span><b>按应用生效</b><small>只对配置的包名隐藏</small></span><span class="toggle"><input id="pathmask-app-scope" type="checkbox"><span></span></span></label>
+            <label class="switch-row"><span><b>隐藏目录项</b><small>从目录遍历结果中移除</small></span><span class="toggle"><input id="pathmask-dirents" type="checkbox"><span></span></span></label>
+            <label class="switch-row"><span><b>包含隔离进程</b><small>覆盖应用隔离 UID</small></span><span class="toggle"><input id="pathmask-isolated" type="checkbox"><span></span></span></label>
+            <label class="switch-row"><span><b>开机自动加载</b><small>按保存配置自动加载</small></span><span class="toggle"><input id="pathmask-auto-load" type="checkbox"><span></span></span></label>
+          </div>
+          <label class="form-field compact"><span>自动加载延迟（秒）</span><input id="pathmask-delay" type="number" min="0" max="600" step="1" inputmode="numeric"></label>
+          <div class="tool-actions end"><button id="pathmask-delete" class="btn danger" type="button">删除配置</button><button id="pathmask-unload" class="btn" type="button">卸载当前模块</button><button id="pathmask-save" class="btn primary" type="button">保存并应用</button></div>
+        </div>
+      </section>
+
+      <section id="builtin-mount-panel" class="tool-section hidden" aria-labelledby="builtin-mount-heading">
+        <div class="section-head"><div><h2 id="builtin-mount-heading">内置挂载</h2><p id="builtin-mount-detail" class="sub">Hybrid Mount 内置包与默认挂载模式</p></div><label class="toggle"><input id="builtin-mount-enabled" type="checkbox" aria-label="内置挂载"><span></span></label></div>
+        <div class="card tool-card"><div class="tool-form-row"><label class="form-field grow"><span>默认模式</span><select id="builtin-mount-mode"><option value="overlay">Overlay</option><option value="magic">Magic Mount</option></select></label><label class="form-field grow"><span>内置版本</span><select id="builtin-mount-variant"><option value="lite">Lite</option><option value="full">Full</option></select></label></div><div id="builtin-mount-status" class="inline-status"></div></div>
+      </section>
+
+      <section id="kpatch-next-panel" class="tool-section hidden" aria-labelledby="kpatch-next-heading">
+        <div class="section-head"><div><h2 id="kpatch-next-heading">KPatch-Next</h2><p id="kpatch-next-detail" class="sub">LKM KPM 后端与启动时加载器</p></div><label class="toggle"><input id="kpatch-next-enabled" type="checkbox" aria-label="KPatch-Next"><span></span></label></div>
+        <div id="kpatch-next-status" class="card inline-status">正在读取状态……</div>
+      </section>
+
+      <section class="tool-section" aria-labelledby="power-heading"><h2 id="power-heading">电源</h2>
+      <div class="card">
+        <div class="row">
+          <div class="row-main"><div class="row-title">重启设备</div><div class="row-detail">正常重启、用户空间、软重启与启动模式</div></div>
+          <button class="btn small" type="button" data-open-reboot>打开菜单</button>
+        </div>
+      </div>
+      <div class="notice warn"><b>操作前请保存工作</b><span>Recovery、Bootloader、Download 和 EDL 会离开当前系统；EDL 可能需要专用工具才能退出。</span></div>
+      </section>
+    </section>
+
+    <section id="view-settings" class="view" data-page="settings" hidden>
+      <div class="page-head"><div><h1>设置</h1><p class="sub">持久服务与本机访问配置</p></div><button class="btn small" type="button" data-retry="settings">刷新</button></div>
+      <div id="settings-card" class="card" aria-live="polite"><div class="state"><b>正在读取服务设置</b>请稍候……</div></div>
+      <div class="card">
+        <div class="row"><div class="row-main"><div class="row-title">PWA 网页应用</div><div id="pwa-detail" class="row-detail">正在检查安装状态</div></div><button id="install-pwa-settings" class="btn small" type="button">安装到桌面</button></div>
+        <div class="row"><div class="row-main"><div class="row-title">ksud REST API</div><div id="api-version-detail" class="row-detail">正在读取接口版本</div></div></div>
+      </div>
+      <div class="card">
+        <div class="row"><div class="row-main"><div class="row-title">隐身模式</div><div id="stealth-detail" class="row-detail">读取中</div></div><label class="toggle"><input id="stealth-toggle" type="checkbox" aria-label="隐身模式"><span></span></label></div>
+        <div class="row"><div class="row-main"><div class="row-title">隐身密令</div><div id="stealth-code-detail" class="row-detail">默认 *#*#4211#*#*</div></div><button id="stealth-code-edit" class="btn small" type="button">设置密令</button></div>
+      </div>
+      <section class="settings-group" aria-labelledby="manager-settings-heading">
+        <h2 id="manager-settings-heading">软件管理器</h2>
+        <p class="sub">这些设置会通过 ksud 同步到软件管理器，并在界面中即时生效。</p>
+        <div class="card">
+          <div class="row"><div class="row-main"><div class="row-title">语言</div><div class="row-detail">选择整个应用使用的界面语言</div></div><select id="manager-language" data-manager-setting="language" aria-label="软件管理器语言"><option value="zh-CN">简体中文</option><option value="en">English</option><option value="fr">Français</option><option value="ru">Русский</option><option value="ja">日本語</option><option value="ko">한국어</option><option value="es">Español</option></select></div>
+          <div class="row"><div class="row-main"><div class="row-title">检查模块更新</div><div class="row-detail">自动检查已安装模块是否有可用更新</div></div><label class="toggle"><input id="manager-check-module-update" type="checkbox" data-manager-setting="checkModuleUpdate" aria-label="检查模块更新"><span></span></label></div>
+          <div class="row"><div class="row-main"><div class="row-title">版本不匹配警告</div><div class="row-detail">管理器与 ApkeSU 驱动版本不匹配时显示警告</div></div><label class="toggle"><input id="manager-version-warning" type="checkbox" data-manager-setting="showVersionMismatchWarning" aria-label="版本不匹配警告"><span></span></label></div>
+          <div class="row"><div class="row-main"><div class="row-title">显示 GKI 测试提示</div><div class="row-detail">在首页显示 GKI 工作模式仅建议测试使用的提醒</div></div><label class="toggle"><input id="manager-gki-warning" type="checkbox" data-manager-setting="showGkiWarning" aria-label="显示 GKI 测试提示"><span></span></label></div>
+          <div class="row"><div class="row-main"><div class="row-title">显示支持开发卡片</div><div class="row-detail">在主页显示支持开发卡片</div></div><label class="toggle"><input id="manager-support-card" type="checkbox" data-manager-setting="showHomeSupportCard" aria-label="显示支持开发卡片"><span></span></label></div>
+          <div class="row"><div class="row-main"><div class="row-title">显示了解 ApkeSU 卡片</div><div class="row-detail">在主页显示了解 ApkeSU 卡片</div></div><label class="toggle"><input id="manager-learn-card" type="checkbox" data-manager-setting="showHomeLearnCard" aria-label="显示了解 ApkeSU 卡片"><span></span></label></div>
+          <div class="row"><div class="row-main"><div class="row-title">动态管理器</div><div id="dynamic-manager-detail" class="row-detail">读取中</div></div><button id="dynamic-manager-open" class="btn small" type="button">管理</button></div>
+          <div class="row"><div class="row-main"><div class="row-title">自定义主页顶部名称</div><div id="manager-home-title-detail" class="row-detail">当前跟随默认名称</div></div><button id="manager-home-title-edit" class="btn small" type="button">修改</button></div>
+        </div>
+        <div id="manager-settings-error" class="notice warn hidden"><b>同步提示</b><span></span></div>
+      </section>
+      <section class="settings-group" aria-labelledby="feature-heading">
+        <h2 id="feature-heading">Root 与权限</h2>
+        <p class="sub">与软件管理器使用同一组内核特性；不支持或被模块接管时开关会禁用。</p>
+        <div class="card">
+          <div class="row"><div class="row-main"><div class="row-title">内核特性</div><div class="row-detail">su、挂载隐藏、日志、ADB 与安全能力</div></div><button id="feature-refresh" class="btn small" type="button">刷新</button></div>
+          <div id="feature-rows"><div class="state"><b>正在读取内核特性</b>请稍候……</div></div>
+        </div>
+        <div class="card"><div class="row"><div class="row-main"><div class="row-title">GKI Seccomp Hook</div><div id="seccomp-detail" class="row-detail">读取中</div></div></div></div>
+      </section>
+      <div class="card">
+        <div class="row"><div class="row-main"><div class="row-title">界面主题</div><div class="row-detail">只保存在当前浏览器中</div></div><select id="theme-select" aria-label="界面主题"><option value="auto">跟随系统</option><option value="light">浅色</option><option value="dark">深色</option></select></div>
+      </div>
+      <section class="settings-group" aria-labelledby="wallpaper-heading">
+        <h2 id="wallpaper-heading">主页卡片自定义</h2>
+        <p class="sub">为主状态、超级用户、模块和设备信息卡片设置独立壁纸。</p>
+        <div id="wallpaper-rows" class="card asset-rows"><div class="state"><b>正在读取卡片设置</b>请稍候……</div></div>
+      </section>
+      <section class="settings-group" aria-labelledby="nav-icon-heading">
+        <h2 id="nav-icon-heading">导航栏图标自定义</h2>
+        <p class="sub">同一图标会同时应用到底部导航和桌面标签。</p>
+        <div id="nav-icon-rows" class="card asset-rows"><div class="state"><b>正在读取图标设置</b>请稍候……</div></div>
+      </section>
+      <input id="asset-file-input" class="hidden" type="file" accept="image/png,image/jpeg,image/webp,image/gif">
+      <div class="notice"><b>安全说明</b><span>服务只监听 127.0.0.1，并使用令牌 Cookie。需要轮换令牌时，在 root shell 执行 <code>ksud web-manager rotate-token</code>。</span></div>
+      <div class="card danger-card">
+        <div class="row"><div class="row-main"><div class="row-title">停止当前网页服务</div><div class="row-detail">停止后当前页面会断开；开机自动启动设置不会改变。</div></div><button id="stop-service" class="btn small danger" type="button">停止</button></div>
+      </div>
+      <button id="theme-toggle" class="hidden" type="button" tabindex="-1" aria-hidden="true">◐</button>
+      <button id="refresh-all" class="hidden" type="button" tabindex="-1" aria-hidden="true">⟳</button>
+    </section>
   </main>
-  <nav class="bottom-nav" aria-label="主导航"><button data-page="overview" class="selected">概览</button><button data-page="modules">模块</button><button data-page="superuser">超级用户</button><button data-page="settings">设置</button></nav>
-  <div id="toast" role="status"></div>
-  <script src="/app.js"></script>
+
+  <nav class="navbar" aria-label="页面导航">
+    <button class="active" type="button" data-view="home" data-icon-slot="home"><span class="nav-ico" aria-hidden="true">⌂</span>主页</button>
+    <button type="button" data-view="superuser" data-icon-slot="superuser"><span class="nav-ico" aria-hidden="true">✓</span>授权</button>
+    <button type="button" data-view="modules" data-icon-slot="module"><span class="nav-ico" aria-hidden="true">▤</span>模块</button>
+    <button type="button" data-view="tools" data-icon-slot="kpm"><span class="nav-ico" aria-hidden="true">◇</span><span data-tools-label>工具</span></button>
+    <button type="button" data-view="settings" data-icon-slot="settings"><span class="nav-ico" aria-hidden="true">⚙</span>设置</button>
+  </nav>
+
+  <div id="dialog" class="sheet hidden" role="dialog" aria-modal="true" aria-labelledby="dialog-title" aria-hidden="true">
+    <div class="sheet-panel">
+      <div class="sheet-head"><h2 id="dialog-title">操作</h2><button id="dialog-close" class="iconbtn" type="button" aria-label="关闭">×</button></div>
+      <div id="dialog-body" class="sheet-body"></div>
+      <div id="dialog-foot" class="sheet-foot"><button class="btn" type="button" data-close-dialog>取消</button></div>
+    </div>
+  </div>
+  <div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
+  <script src="/app.js?v=11"></script>
 </body>
 </html>

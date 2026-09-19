@@ -128,6 +128,8 @@ fun SettingsCategoryScreen(routeValue: String) {
     var showHomeTitleDialog by rememberSaveable { mutableStateOf(false) }
     var showSendLogDialog by rememberSaveable { mutableStateOf(false) }
     var showUninstallDialog by rememberSaveable { mutableStateOf(false) }
+    var showStealthModeDialog by rememberSaveable { mutableStateOf(false) }
+    var stealthModeDialogEnablesMode by rememberSaveable { mutableStateOf(false) }
     val loadingDialog = rememberLoadingDialog()
     LifecycleResumeEffect(category.routeValue) {
         viewModel.refresh()
@@ -230,6 +232,11 @@ fun SettingsCategoryScreen(routeValue: String) {
                         ).show()
                     }
                 },
+                onSetStealthMode = { enabled, code -> viewModel.setStealthMode(enabled, code) },
+                onOpenStealthModeDialog = { enableAfterSave ->
+                    stealthModeDialogEnablesMode = enableAfterSave
+                    showStealthModeDialog = true
+                },
                 onOpen = navigator::push,
             )
         }
@@ -249,6 +256,17 @@ fun SettingsCategoryScreen(routeValue: String) {
     UninstallDialog(
         show = showUninstallDialog,
         onDismissRequest = { showUninstallDialog = false },
+    )
+    StealthModeCodeDialog(
+        show = showStealthModeDialog,
+        currentCode = uiState.stealthModeCode,
+        enableAfterSave = stealthModeDialogEnablesMode,
+        busy = uiState.stealthModeBusy,
+        onDismissRequest = { showStealthModeDialog = false },
+        onConfirm = { code ->
+            viewModel.setStealthMode(stealthModeDialogEnablesMode, code)
+            showStealthModeDialog = false
+        },
     )
 }
 
@@ -740,6 +758,8 @@ private fun AppMaintenanceSettingsContent(
     onUninstall: () -> Unit,
     onSetWebManagerAutoStart: (Boolean) -> Unit,
     onOpenWebManager: () -> Unit,
+    onSetStealthMode: (Boolean, String) -> Unit,
+    onOpenStealthModeDialog: (Boolean) -> Unit,
     onOpen: (Route) -> Unit,
 ) {
     SettingsGroup(stringResource(R.string.settings_group_general)) {
@@ -814,6 +834,25 @@ private fun AppMaintenanceSettingsContent(
             summary = stringResource(R.string.web_manager_open_summary),
             icon = Icons.Rounded.Language,
             onClick = onOpenWebManager,
+        )
+        SettingsDivider()
+        SettingsSwitchRow(
+            title = stringResource(R.string.stealth_mode_title),
+            summary = stringResource(R.string.stealth_mode_summary),
+            icon = Icons.Rounded.Security,
+            enabled = !uiState.stealthModeBusy,
+            checked = uiState.stealthModeEnabled,
+            onCheckedChange = { enabled ->
+                if (enabled) onOpenStealthModeDialog(true)
+            },
+        )
+        SettingsDivider()
+        SettingsActionRow(
+            title = stringResource(R.string.stealth_mode_code_title),
+            summary = uiState.stealthModeCode,
+            icon = Icons.Rounded.Visibility,
+            enabled = !uiState.stealthModeBusy && !uiState.stealthModeEnabled,
+            onClick = { onOpenStealthModeDialog(false) },
         )
     }
     SettingsGroup(stringResource(R.string.settings_group_maintenance_about)) {
