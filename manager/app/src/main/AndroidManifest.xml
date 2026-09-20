@@ -312,7 +312,8 @@
 
         <receiver
             android:name=".stealth.StealthModeSyncReceiver"
-            android:exported="true">
+            android:exported="true"
+            android:permission="android.permission.DUMP">
             <intent-filter>
                 <action android:name="me.weishu.kernelsu.action.STEALTH_MODE_DISABLED" />
                 <action android:name="me.weishu.kernelsu.action.STEALTH_MODE_CHANGED" />

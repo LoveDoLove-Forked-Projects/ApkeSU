@@ -2595,7 +2595,7 @@ internal object WebManagerServer {
             ?: return errorResponse(
                 400,
                 "invalid_stealth_code",
-                "隐身密令必须是 3-16 位数字或 *#*#数字#*#* 格式",
+                "隐身密令不能为空，也不能包含换行符",
             )
         return StealthModeStore.setEnabledBlocking(
             enabled = enabled,

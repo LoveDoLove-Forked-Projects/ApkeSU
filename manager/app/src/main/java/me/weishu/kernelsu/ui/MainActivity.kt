@@ -8,7 +8,6 @@ import android.os.Build
 import android.os.Bundle
 import android.util.Log
 import android.view.WindowManager
-import android.window.SplashScreenView
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.SystemBarStyle
@@ -54,6 +53,7 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.produceState
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -77,6 +77,7 @@ import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.core.net.toUri
+import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -294,6 +295,7 @@ class MainActivity : ComponentActivity() {
 
     @SuppressLint("UnusedMaterial3ScaffoldPaddingParameter")
     override fun onCreate(savedInstanceState: Bundle?) {
+        val startupSplash = installSplashScreen()
         super.onCreate(savedInstanceState)
 
         // The splash post-theme is NoActionBar, but some OEM/theme combinations
@@ -319,22 +321,12 @@ class MainActivity : ComponentActivity() {
                 target = target,
             )
         }
+        var startupStateResolved = false
+        var waitingForLkmWallpaper = lkmWallpaperTargets.isNotEmpty()
+        startupSplash.setKeepOnScreenCondition {
+            !startupStateResolved || waitingForLkmWallpaper
+        }
         if (lkmWallpaperTargets.isNotEmpty()) {
-            var waitingForLkmWallpaper = true
-            var splashProvider: SplashScreenView? = null
-
-            fun releaseSplash() {
-                splashProvider?.remove()
-                splashProvider = null
-            }
-
-            splashScreen.setOnExitAnimationListener { provider ->
-                if (waitingForLkmWallpaper) {
-                    splashProvider = provider
-                } else {
-                    provider.remove()
-                }
-            }
             lifecycleScope.launch {
                 lkmWallpaperTargets.map { target ->
                     async {
@@ -345,12 +337,10 @@ class MainActivity : ComponentActivity() {
                     }
                 }.awaitAll()
                 waitingForLkmWallpaper = false
-                releaseSplash()
             }
             lifecycleScope.launch {
                 delay(LKM_WALLPAPER_SPLASH_TIMEOUT_MS)
                 waitingForLkmWallpaper = false
-                releaseSplash()
             }
         }
 
@@ -378,6 +368,9 @@ class MainActivity : ComponentActivity() {
             val uiState by viewModel.uiState.collectAsStateWithLifecycle()
             val selectedMainDestination by viewModel.selectedMainDestination.collectAsStateWithLifecycle()
             val managerReady by managerReadyState.collectAsStateWithLifecycle()
+            SideEffect {
+                startupStateResolved = uiState.stealthModeResolved
+            }
             val appSettings = uiState.appSettings
             val uiMode = uiState.uiMode
             val startupAnimationUri = uiState.customStartupAnimationUri
@@ -455,8 +448,16 @@ class MainActivity : ComponentActivity() {
             }
 
             val navigator = rememberNavigator(Route.Main)
-            val currentRoute = navigator.current() as? Route
-            val uiDecorationScope = resolveUiDecorationScope(currentRoute, selectedMainDestination)
+            val stealthNavigator = remember { Navigator(Route.Main) }
+            val currentRoute = if (uiState.stealthModeEnabled) {
+                Route.Main
+            } else {
+                navigator.current() as? Route
+            }
+            val uiDecorationScope = resolveUiDecorationScope(
+                currentRoute,
+                if (uiState.stealthModeEnabled) MainDestination.Home else selectedMainDestination,
+            )
             val systemDensity = LocalDensity.current
             val density = remember(systemDensity, uiState.pageScale, uiState.fontScale) {
                 Density(
@@ -568,12 +569,13 @@ class MainActivity : ComponentActivity() {
                     }
 
                     val navDisplay = @Composable {
-                        if (uiState.stealthModeEnabled) {
-                            mainScreenEntry()
-                        } else {
-                            NavDisplay(
+                        NavDisplay(
                             modifier = Modifier.fillMaxSize(),
-                            backStack = navigator.backStack,
+                            backStack = if (uiState.stealthModeEnabled) {
+                                stealthNavigator.backStack
+                            } else {
+                                navigator.backStack
+                            },
                             entryDecorators = listOf(
                                 rememberSaveableStateHolderNavEntryDecorator(),
                                 rememberViewModelStoreNavEntryDecorator()
@@ -706,8 +708,7 @@ class MainActivity : ComponentActivity() {
                                 blockInputDuringTransition = true,
                                 popDirectionFollowsSwipeEdge = true,
                             ),
-                            )
-                        }
+                        )
                     }
                     val globalGlassBackdrop = rememberBlurBackdrop(effectiveEnableBlur)
                     // KPM owns an Android WebView. During a route transition the old
@@ -837,7 +838,10 @@ class MainActivity : ComponentActivity() {
                                                     }
                                                 )
                                         ) {
-                                            Scaffold(containerColor = Color.Transparent) { navDisplay() }
+                                            Scaffold(
+                                                containerColor = Color.Transparent,
+                                                contentWindowInsets = WindowInsets(0, 0, 0, 0),
+                                            ) { navDisplay() }
                                         }
                                     }
                                 }
@@ -1465,7 +1469,10 @@ fun MainScreen(
                 .only(WindowInsetsSides.Start)
             val navBarBottomPadding = WindowInsets.systemBars.asPaddingValues().calculateBottomPadding()
 
-            Scaffold(containerColor = Color.Transparent) { _ ->
+            Scaffold(
+                containerColor = Color.Transparent,
+                contentWindowInsets = WindowInsets(0, 0, 0, 0),
+            ) { _ ->
                 Row {
                     SideRail(
                         blurBackdrop = blurBackdrop,
@@ -1500,6 +1507,7 @@ fun MainScreen(
             Scaffold(
                 bottomBar = bottomBar,
                 containerColor = Color.Transparent,
+                contentWindowInsets = WindowInsets(0, 0, 0, 0),
             ) { innerPadding ->
                 val systemNavigationPadding = WindowInsets.systemBars
                     .asPaddingValues()

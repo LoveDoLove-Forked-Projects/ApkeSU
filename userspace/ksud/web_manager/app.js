@@ -899,7 +899,7 @@
   }
 
   function stealthCodeIsValid(value) {
-    return /^(?:\d{3,16}|\*#\*#\d{3,16}#\*#\*)$/.test(String(value || '').trim());
+    return String(value || '').trim().length > 0;
   }
 
   function openStealthDialog(enableAfterSave) {
@@ -910,7 +910,7 @@
       : '';
     openDialog(
       enableAfterSave ? '启用隐身模式' : '设置隐身密令',
-      `${warning}<label class="field"><span>密令</span><input id="stealth-code-input" type="text" inputmode="numeric" autocomplete="off" value="${esc(code)}" aria-label="隐身密令" autofocus></label><p class="sub">输入 3-16 位数字，或完整的 *#*#数字#*#* 格式。</p>`,
+      `${warning}<label class="field"><span>密令</span><input id="stealth-code-input" type="text" autocomplete="off" value="${esc(code)}" aria-label="隐身密令" autofocus></label><p class="sub">密令不限制长度或字符；使用拨号关闭时输入 *#*#密令#*#*。</p>`,
       '<button id="stealth-save" class="btn primary" type="button">保存</button><button class="btn" type="button" data-close-dialog>取消</button>',
     );
     $('stealth-save').addEventListener('click', () => saveStealth(enableAfterSave));
@@ -919,7 +919,7 @@
   function openStealthDisableDialog() {
     openDialog(
       '关闭隐身模式',
-      '<div class="notice warn"><b>需要验证隐身密令</b><span>请输入启用隐身模式时保存的密令。</span></div><label class="field"><span>密令</span><input id="stealth-disable-code" type="password" inputmode="numeric" autocomplete="off" value="" aria-label="隐身密令" autofocus></label>',
+      '<div class="notice warn"><b>需要验证隐身密令</b><span>请输入启用隐身模式时保存的密令。</span></div><label class="field"><span>密令</span><input id="stealth-disable-code" type="password" autocomplete="off" value="" aria-label="隐身密令" autofocus></label>',
       '<button id="stealth-disable" class="btn danger" type="button">验证并关闭</button><button class="btn" type="button" data-close-dialog>取消</button>',
     );
     $('stealth-disable').addEventListener('click', disableStealth);
@@ -929,7 +929,7 @@
     const input = $('stealth-disable-code');
     const code = input.value.trim();
     if (!stealthCodeIsValid(code)) {
-      notify('请输入正确格式的隐身密令', true, 4000);
+      notify('密令不能为空', true, 4000);
       input.focus();
       return;
     }
@@ -955,7 +955,7 @@
     const input = $('stealth-code-input');
     const code = input.value.trim();
     if (!stealthCodeIsValid(code)) {
-      notify('密令格式无效，请输入 3-16 位数字', true, 4000);
+      notify('密令不能为空', true, 4000);
       input.focus();
       return;
     }

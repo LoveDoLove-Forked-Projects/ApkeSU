@@ -3377,8 +3377,8 @@
     <string name="stealth_mode_title">Stealth mode</string>
     <string name="stealth_mode_summary">Make Home look uninstalled and hide Superuser, Modules, KPM, and Settings. Once enabled, it can only be disabled by entering the code in Web Manager or dialing the secret code.</string>
     <string name="stealth_mode_code_title">Stealth secret code</string>
-    <string name="stealth_mode_code_format">Use *#*# plus 3–16 digits plus #*#*. The code is backed up to /data/adb/ksu/hansu_code.</string>
-    <string name="stealth_mode_code_invalid">Enter 3–16 digits or a complete *#*#…#*#* code.</string>
+    <string name="stealth_mode_code_format">The code has no length or character-format rule and is backed up to /data/adb/ksu/hansu_code. To disable from the dialer, enter *#*#code#*#*.</string>
+    <string name="stealth_mode_code_invalid">The code cannot be empty.</string>
     <string name="stealth_mode_enable_title">Enable stealth mode?</string>
     <string name="stealth_mode_dialog_summary">After enabling, Home will show “not installed” and all management and settings pages will be hidden. Keep this code; you can then restore the interface only through Web Manager or the dialer.</string>
     <string name="stealth_mode_enable_action">Enable</string>

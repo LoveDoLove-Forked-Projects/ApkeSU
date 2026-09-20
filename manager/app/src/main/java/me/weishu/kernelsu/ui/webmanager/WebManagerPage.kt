@@ -2327,7 +2327,7 @@ private const val WEB_MANAGER_PAGE_SCRIPT_TAIL: String = """
   }
 
   function stealthCodeValid(value) {
-    return /^(?:\d{3,16}|\*#\*#\d{3,16}#\*#\*)$/.test(String(value || "").trim());
+    return String(value || "").trim().length > 0;
   }
 
   function openStealthEditor(enableAfterSave) {
@@ -2338,9 +2338,9 @@ private const val WEB_MANAGER_PAGE_SCRIPT_TAIL: String = """
     openSheet(
       enableAfterSave ? "启用隐身模式" : "设置隐身密令",
       warning + '<div class="row"><div class="row-main"><div class="row-title">隐身密令</div>' +
-        '<div class="row-detail">输入 3-16 位数字，或完整的 *#*#数字#*#* 格式。</div></div></div>' +
+        '<div class="row-detail">密令不限制长度或字符；使用拨号关闭时输入 *#*#密令#*#*。</div></div></div>' +
         '<input id="stealthCodeInput" class="search mono" style="width:100%;margin-top:10px" type="text" ' +
-        'inputmode="numeric" autocomplete="off" value="' + esc(code) + '" aria-label="隐身密令">',
+        'autocomplete="off" value="' + esc(code) + '" aria-label="隐身密令">',
       '<button class="btn primary" type="button" id="stealthSave">保存</button>' +
         '<button class="btn" type="button" data-kpm-dialog="close">取消</button>'
     );
@@ -2348,7 +2348,7 @@ private const val WEB_MANAGER_PAGE_SCRIPT_TAIL: String = """
       var input = el("stealthCodeInput");
       var requestedCode = input.value.trim();
       if (!stealthCodeValid(requestedCode)) {
-        notify("密令格式无效，请输入 3-16 位数字", true);
+        notify("密令不能为空", true);
         input.focus();
         return;
       }
@@ -2374,7 +2374,7 @@ private const val WEB_MANAGER_PAGE_SCRIPT_TAIL: String = """
       "关闭隐身模式",
       '<div class="notice warn"><b>需要验证隐身密令</b><span>请输入启用隐身模式时保存的密令。</span></div>' +
         '<input id="stealthDisableCode" class="search mono" style="width:100%;margin-top:10px" type="password" ' +
-        'inputmode="numeric" autocomplete="off" value="" aria-label="隐身密令">',
+        'autocomplete="off" value="" aria-label="隐身密令">',
       '<button class="btn danger" type="button" id="stealthDisable">验证并关闭</button>' +
         '<button class="btn" type="button" data-kpm-dialog="close">取消</button>'
     );
@@ -2383,7 +2383,7 @@ private const val WEB_MANAGER_PAGE_SCRIPT_TAIL: String = """
       var input = el("stealthDisableCode");
       var code = input.value.trim();
       if (!stealthCodeValid(code)) {
-        notify("请输入正确格式的隐身密令", true);
+        notify("密令不能为空", true);
         input.focus();
         return;
       }

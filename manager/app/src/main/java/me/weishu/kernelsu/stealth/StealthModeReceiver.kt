@@ -46,17 +46,12 @@ class StealthModeSyncReceiver : BroadcastReceiver() {
         if (intent.action != STEALTH_MODE_DISABLED_ACTION &&
             intent.action != STEALTH_MODE_CHANGED_ACTION
         ) return
+        val enabled = intent.action == STEALTH_MODE_CHANGED_ACTION
         val pendingResult = goAsync()
         val appContext = context.applicationContext
         thread(name = "stealth-mode-sync", isDaemon = true) {
             try {
-                StealthModeStore.readRootState().onSuccess { rootState ->
-                    StealthModeStore.updateLocalState(
-                        appContext,
-                        rootState.enabled,
-                        rootState.code ?: StealthModeStore.code(appContext),
-                    )
-                }
+                StealthModeStore.updateLocalState(appContext, enabled)
             } finally {
                 pendingResult.finish()
             }

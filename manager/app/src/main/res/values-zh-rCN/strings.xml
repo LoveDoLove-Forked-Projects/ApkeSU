@@ -3337,8 +3337,8 @@
     <string name="stealth_mode_title">隐身模式</string>
     <string name="stealth_mode_summary">主页伪装成“未安装”，隐藏超级用户、模块、KPM 与设置；启用后只能在网页管理器输入密令或通过拨号密令关闭。</string>
     <string name="stealth_mode_code_title">隐身密钥</string>
-    <string name="stealth_mode_code_format">格式为 *#*# 加 3–16 位数字再加 #*#*；密令会备份到 /data/adb/ksu/hansu_code。</string>
-    <string name="stealth_mode_code_invalid">请输入 3–16 位数字，或完整的 *#*#…#*#* 密令。</string>
+    <string name="stealth_mode_code_format">密令不限制长度或字符，并会备份到 /data/adb/ksu/hansu_code；使用拨号关闭时请输入 *#*#密令#*#*。</string>
+    <string name="stealth_mode_code_invalid">密令不能为空。</string>
     <string name="stealth_mode_enable_title">启用隐身模式？</string>
     <string name="stealth_mode_dialog_summary">启用后主页将显示“未安装”，所有管理与设置页面都会隐藏。请保存此密令；之后只能在网页管理器输入密令或通过拨号密令恢复。</string>
     <string name="stealth_mode_enable_action">启用</string>

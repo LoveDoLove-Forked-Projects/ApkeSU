@@ -2593,12 +2593,20 @@ fn stealth_status_response() -> Response {
 
 fn normalize_stealth_code(value: &str) -> Option<String> {
     let trimmed = value.trim();
-    let digits = trimmed
+    (!trimmed.is_empty()
+        && !trimmed.contains('\0')
+        && !trimmed.contains('\n')
+        && !trimmed.contains('\r'))
+    .then(|| trimmed.to_string())
+}
+
+fn stealth_code_key(value: &str) -> Option<String> {
+    let normalized = normalize_stealth_code(value)?;
+    normalized
         .strip_prefix("*#*#")
         .and_then(|value| value.strip_suffix("#*#*"))
-        .unwrap_or(trimmed);
-    (digits.len() >= 3 && digits.len() <= 16 && digits.bytes().all(|byte| byte.is_ascii_digit()))
-        .then(|| format!("*#*#{digits}#*#*"))
+        .filter(|value| !value.is_empty())
+        .map_or_else(|| Some(normalized.clone()), |value| Some(value.to_string()))
 }
 
 fn stored_stealth_code() -> String {
@@ -2609,10 +2617,10 @@ fn stored_stealth_code() -> String {
 }
 
 fn stealth_code_matches(configured: &str, requested: &str) -> bool {
-    let Some(configured) = normalize_stealth_code(configured) else {
+    let Some(configured) = stealth_code_key(configured) else {
         return false;
     };
-    let Some(requested) = normalize_stealth_code(requested) else {
+    let Some(requested) = stealth_code_key(requested) else {
         return false;
     };
     constant_time_eq(&configured, &requested)
@@ -2714,7 +2722,7 @@ fn stealth_action_response(body: &[u8]) -> Response {
         return Response::error(
             400,
             "invalid_stealth_code",
-            "隐身密令必须是 3-16 位数字或 *#*#数字#*#* 格式",
+            "隐身密令不能为空，也不能包含换行符",
         );
     };
     let _guard = WRITE_LOCK
@@ -3064,25 +3072,28 @@ mod tests {
     }
 
     #[test]
-    fn stealth_codes_accept_digits_or_full_secret_code_format() {
-        assert_eq!(
-            normalize_stealth_code("4211").as_deref(),
-            Some("*#*#4211#*#*")
-        );
+    fn stealth_codes_accept_arbitrary_non_empty_single_line_values() {
+        assert_eq!(normalize_stealth_code("4211").as_deref(), Some("4211"));
         assert_eq!(
             normalize_stealth_code("*#*#123456#*#*").as_deref(),
             Some("*#*#123456#*#*")
         );
-        assert!(normalize_stealth_code("12").is_none());
-        assert!(normalize_stealth_code("*#*#12ab#*#*").is_none());
+        assert_eq!(
+            normalize_stealth_code("letters, symbols !@'中文").as_deref(),
+            Some("letters, symbols !@'中文")
+        );
+        assert_eq!(normalize_stealth_code("1").as_deref(), Some("1"));
+        assert!(normalize_stealth_code("").is_none());
+        assert!(normalize_stealth_code("line one\nline two").is_none());
     }
 
     #[test]
     fn stealth_disable_code_must_match_after_normalization() {
         assert!(stealth_code_matches("*#*#4211#*#*", "4211"));
         assert!(stealth_code_matches("4211", " *#*#4211#*#* "));
+        assert!(stealth_code_matches("custom !@'中文", "custom !@'中文"));
         assert!(!stealth_code_matches("*#*#4211#*#*", "42110"));
-        assert!(!stealth_code_matches("*#*#4211#*#*", "12"));
+        assert!(!stealth_code_matches("*#*#4211#*#*", ""));
     }
 
     #[test]

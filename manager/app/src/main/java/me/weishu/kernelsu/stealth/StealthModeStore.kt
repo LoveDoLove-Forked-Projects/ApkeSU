@@ -17,8 +17,6 @@ const val STEALTH_MODE_CHANGED_ACTION = "me.weishu.kernelsu.action.STEALTH_MODE_
 private const val SETTINGS_PREFS = "settings"
 private const val STEALTH_CODE_PATH = "/data/adb/ksu/hansu_code"
 private const val STEALTH_MODE_PATH = "/data/adb/ksu/hansu_mode"
-private val SECRET_CODE_PATTERN = Regex("^\\*#\\*#([0-9]{3,16})#\\*#\\*$")
-private val SECRET_CODE_HOST_PATTERN = Regex("^[0-9]{3,16}$")
 
 data class StealthModeRootState(
     val enabled: Boolean,
@@ -36,26 +34,28 @@ object StealthModeStore {
 
     fun normalizeCode(value: String): String? {
         val trimmed = value.trim()
-        if (SECRET_CODE_HOST_PATTERN.matches(trimmed)) {
-            return "*#*#$trimmed#*#*"
-        }
-        return SECRET_CODE_PATTERN.matchEntire(trimmed)?.let { match ->
-            "*#*#${match.groupValues[1]}#*#*"
+        return trimmed.takeIf {
+            it.isNotEmpty() && '\u0000' !in it && '\n' !in it && '\r' !in it
         }
     }
 
-    fun secretCodeHost(value: String): String? = normalizeCode(value)
-        ?.let(SECRET_CODE_PATTERN::matchEntire)
-        ?.groupValues
-        ?.get(1)
+    fun secretCodeHost(value: String): String? {
+        val normalized = normalizeCode(value) ?: return null
+        if (normalized.startsWith("*#*#") && normalized.endsWith("#*#*")) {
+            return normalized.substring(4, normalized.length - 4)
+                .takeIf(String::isNotEmpty)
+                ?: normalized
+        }
+        return normalized
+    }
 
     fun matchesSecretCode(host: String?, configuredCode: String): Boolean {
         return host != null && host == secretCodeHost(configuredCode)
     }
 
     fun matchesRequestedCode(requestedCode: String?, configuredCode: String): Boolean {
-        val requested = requestedCode?.let(::normalizeCode) ?: return false
-        val configured = normalizeCode(configuredCode) ?: return false
+        val requested = requestedCode?.let(::secretCodeHost) ?: return false
+        val configured = secretCodeHost(configuredCode) ?: return false
         return requested == configured
     }
 
@@ -68,9 +68,9 @@ object StealthModeStore {
         val temporaryCodePath = "$STEALTH_CODE_PATH.tmp.${Process.myPid()}"
         val command = buildString {
             append("umask 077; mkdir -p /data/adb/ksu && ")
-            append("printf '%s\\n' '")
-            append(normalizedCode)
-            append("' > ")
+            append("printf '%s\\n' ")
+            append(shellQuote(normalizedCode))
+            append(" > ")
             append(temporaryCodePath)
             append(" && chmod 600 ")
             append(temporaryCodePath)
@@ -147,4 +147,8 @@ object StealthModeStore {
 
     private fun preferences(context: Context) = context.applicationContext
         .getSharedPreferences(SETTINGS_PREFS, Context.MODE_PRIVATE)
+
+    internal fun shellQuote(value: String): String {
+        return "'" + value.replace("'", "'\"'\"'") + "'"
+    }
 }
