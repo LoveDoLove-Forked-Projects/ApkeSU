@@ -5,8 +5,6 @@ import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
 
 internal object WebManagerSecurity {
-    const val TOKEN_COOKIE_NAME = "apkesu_web_token"
-
     private const val MAX_MODULE_ID_LENGTH = 128
     private val moduleIdPattern = Regex("[A-Za-z0-9._-]{1,$MAX_MODULE_ID_LENGTH}")
     private const val MAX_UPLOAD_NAME_LENGTH = 96
@@ -43,6 +41,12 @@ internal object WebManagerSecurity {
             value == "http://localhost:$port"
     }
 
+    fun isAllowedHost(host: String?, port: Int): Boolean {
+        val value = host?.trim() ?: return false
+        return value.equals("127.0.0.1:$port", ignoreCase = true) ||
+            value.equals("localhost:$port", ignoreCase = true)
+    }
+
     fun bearerToken(authorization: String?): String? {
         val value = authorization?.trim() ?: return null
         val prefix = "Bearer "
@@ -60,18 +64,4 @@ internal object WebManagerSecurity {
         )
     }
 
-    fun cookieToken(cookieHeader: String?): String? {
-        return cookieHeader
-            ?.split(';')
-            ?.asSequence()
-            ?.map { it.trim() }
-            ?.mapNotNull { item ->
-                val separator = item.indexOf('=')
-                if (separator <= 0) return@mapNotNull null
-                val name = item.substring(0, separator).trim()
-                if (name != TOKEN_COOKIE_NAME) return@mapNotNull null
-                item.substring(separator + 1).trim().takeIf(String::isNotEmpty)
-            }
-            ?.firstOrNull()
-    }
 }

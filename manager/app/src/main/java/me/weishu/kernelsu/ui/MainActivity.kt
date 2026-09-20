@@ -696,11 +696,12 @@ class MainActivity : ComponentActivity() {
                                 instantNavTransition()
                             },
                             predictivePopTransitionSpec = { _ ->
-                                if (shouldUseLayeredNavigationTransitions(mainPagerState.kpmActive)) {
-                                    stableNavPopTransitionContentTransform()
-                                } else {
-                                    instantNavTransitionContentTransform()
-                                }
+                                // Secondary pages and the main pager share one transparent
+                                // wallpaper layer. Interactively animating both scenes makes
+                                // their app bars and cards show through each other while the
+                                // back gesture is held. Keep the current scene stable during
+                                // the gesture and swap scenes only after the pop commits.
+                                instantNavTransitionContentTransform()
                             },
                             transitionEffects = NavDisplayTransitionEffects(
                                 enableCornerClip = false,

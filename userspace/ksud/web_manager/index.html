@@ -13,9 +13,24 @@
   <link rel="icon" href="/pwa-icon.svg" type="image/svg+xml">
   <link rel="apple-touch-icon" href="/pwa-icon-192.png">
   <title>ApkeSU</title>
-  <link rel="stylesheet" href="/style.css?v=12">
+  <link rel="stylesheet" href="/style.css?v=13">
 </head>
 <body data-current-view="home">
+  <section id="auth-gate" class="auth-gate" aria-live="polite">
+    <div class="auth-card">
+      <div class="auth-mark" aria-hidden="true">A</div>
+      <p class="auth-kicker">ApkeSU 安全访问</p>
+      <h1 id="auth-title">正在验证设备签名</h1>
+      <p id="auth-detail" class="auth-detail">网页管理操作需要本浏览器持有的 P-256 私钥签名。</p>
+      <div class="auth-proof">
+        <span>私钥仅保存在本浏览器</span>
+        <span>每次请求防篡改、防重放</span>
+        <span>管理令牌不再放入 URL</span>
+      </div>
+      <button id="auth-retry" class="btn primary hidden" type="button">重新验证</button>
+      <p class="auth-help">首次使用或密钥失效时，请从 ApkeSU 的“网页管理器”入口重新打开并完成一次性配对。</p>
+    </div>
+  </section>
   <header class="topbar">
     <div class="topbar-inner">
       <div class="brand"><b>ApkeSU</b></div>
@@ -227,7 +242,7 @@
       </div>
       <div class="card">
         <div class="row"><div class="row-main"><div class="row-title">隐身模式</div><div id="stealth-detail" class="row-detail">读取中</div></div><label class="toggle"><input id="stealth-toggle" type="checkbox" aria-label="隐身模式"><span></span></label></div>
-        <div class="row"><div class="row-main"><div class="row-title">隐身密令</div><div id="stealth-code-detail" class="row-detail">默认 *#*#4211#*#*</div></div><button id="stealth-code-edit" class="btn small" type="button">设置密令</button></div>
+        <div class="row"><div class="row-main"><div class="row-title">隐身密令</div><div id="stealth-code-detail" class="row-detail">加载中…</div></div><button id="stealth-code-edit" class="btn small" type="button">设置密令</button></div>
       </div>
       <section class="settings-group" aria-labelledby="manager-settings-heading">
         <h2 id="manager-settings-heading">软件管理器</h2>
@@ -267,7 +282,7 @@
         <div id="nav-icon-rows" class="card asset-rows"><div class="state"><b>正在读取图标设置</b>请稍候……</div></div>
       </section>
       <input id="asset-file-input" class="hidden" type="file" accept="image/png,image/jpeg,image/webp,image/gif">
-      <div class="notice"><b>安全说明</b><span>服务只监听 127.0.0.1，并使用令牌 Cookie。需要轮换令牌时，在 root shell 执行 <code>ksud web-manager rotate-token</code>。</span></div>
+      <div class="notice"><b>安全说明</b><span>服务只监听 127.0.0.1；管理 API 使用浏览器 P-256 私钥逐请求签名并阻止重放。执行 <code>ksud web-manager rotate-token</code> 可撤销当前浏览器并要求重新配对。</span></div>
       <div class="card danger-card">
         <div class="row"><div class="row-main"><div class="row-title">停止当前网页服务</div><div class="row-detail">停止后当前页面会断开；开机自动启动设置不会改变。</div></div><button id="stop-service" class="btn small danger" type="button">停止</button></div>
       </div>
@@ -292,6 +307,6 @@
     </div>
   </div>
   <div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
-  <script src="/app.js?v=12"></script>
+  <script src="/app.js?v=13"></script>
 </body>
 </html>

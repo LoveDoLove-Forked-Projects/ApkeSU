@@ -22,15 +22,6 @@ class WebManagerSecurityTest {
     }
 
     @Test
-    fun cookieTokenReadsOnlyTheExpectedCookie() {
-        assertTrue(
-            WebManagerSecurity.cookieToken("session=old; apkesu_web_token=secret; theme=dark") == "secret",
-        )
-        assertNull(WebManagerSecurity.cookieToken("apkesu_web_token=; theme=dark"))
-        assertNull(WebManagerSecurity.cookieToken("other_apkesu_web_token=secret"))
-    }
-
-    @Test
     fun originPolicyAllowsLoopbackAndHeaderlessClients() {
         assertTrue(WebManagerSecurity.isAllowedOrigin(null, 10240))
         assertTrue(WebManagerSecurity.isAllowedOrigin("http://127.0.0.1:10240", 10240))
@@ -43,6 +34,15 @@ class WebManagerSecurityTest {
         assertFalse(WebManagerSecurity.isAllowedOrigin("http://localhost:10241", 10240))
         assertFalse(WebManagerSecurity.isAllowedOrigin("http://192.168.1.10:10240", 10240))
         assertFalse(WebManagerSecurity.isAllowedOrigin("", 10240))
+    }
+
+    @Test
+    fun hostPolicyAcceptsOnlyLoopbackNamesOnTheActivePort() {
+        assertTrue(WebManagerSecurity.isAllowedHost("127.0.0.1:10240", 10240))
+        assertTrue(WebManagerSecurity.isAllowedHost("LOCALHOST:10240", 10240))
+        assertFalse(WebManagerSecurity.isAllowedHost("device.example:10240", 10240))
+        assertFalse(WebManagerSecurity.isAllowedHost("127.0.0.1:10241", 10240))
+        assertFalse(WebManagerSecurity.isAllowedHost(null, 10240))
     }
 
     @Test

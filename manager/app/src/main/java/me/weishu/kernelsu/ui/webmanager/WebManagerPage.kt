@@ -420,7 +420,7 @@ private const val WEB_MANAGER_PAGE_MARKUP: String = """
         <div class="row"><div class="row-main"><div class="row-title">接口版本</div><div class="row-detail" id="settingsApi">-</div></div></div>
         <div class="row"><div class="row-main"><div class="row-title">自动刷新</div><div class="row-detail">每 10 秒刷新状态与模块数据</div></div><input id="autoRefreshToggle" type="checkbox" aria-label="自动刷新"></div>
         <div class="row"><div class="row-main"><div class="row-title">隐身模式</div><div class="row-detail" id="stealthDetail">读取中</div></div><input id="stealthToggle" type="checkbox" aria-label="隐身模式"></div>
-        <div class="row"><div class="row-main"><div class="row-title">隐身密令</div><div class="row-detail mono" id="stealthCodeDetail">默认 *#*#4211#*#*</div></div><button class="btn small" type="button" id="stealthCodeEdit">设置密令</button></div>
+        <div class="row"><div class="row-main"><div class="row-title">隐身密令</div><div class="row-detail mono" id="stealthCodeDetail">加载中…</div></div><button class="btn small" type="button" id="stealthCodeEdit">设置密令</button></div>
       </div>
       <div class="card">
         <div class="row">
@@ -599,15 +599,18 @@ private const val WEB_MANAGER_PAGE_SCRIPT_HEAD: String = """<script>
 (function () {
   "use strict";
   var TOKEN_KEY = "apkesu_web_token";
-  var queryToken = new URLSearchParams(location.search).get("token") || "";
-  var token = queryToken;
+  var fragment = location.hash.indexOf("#auth=") === 0 ? location.hash.substring(6) : "";
+  var fragmentToken = "";
+  try { fragmentToken = decodeURIComponent(fragment); } catch (_) { fragmentToken = ""; }
+  var token = fragmentToken;
   try {
-    if (queryToken) {
-      sessionStorage.setItem(TOKEN_KEY, queryToken);
+    if (fragmentToken) {
+      sessionStorage.setItem(TOKEN_KEY, fragmentToken);
+      history.replaceState(null, "", location.pathname);
     } else {
       token = sessionStorage.getItem(TOKEN_KEY) || "";
     }
-  } catch (_) { /* storage disabled: the query token still works */ }
+  } catch (_) { /* storage disabled: the fragment token still works */ }
   var PREFIX = token ? "/w/" + token : "";
 
   var state = {
@@ -630,7 +633,7 @@ private const val WEB_MANAGER_PAGE_SCRIPT_HEAD: String = """<script>
     kpmControlTarget: null,
     kpmPendingFile: null,
     theme: "auto",
-    stealth: { enabled: false, code: "*#*#4211#*#*" },
+    stealth: { enabled: false, codeBackedUp: false },
     managerSettings: null,
     features: [],
     featuresLoaded: false,
@@ -710,7 +713,7 @@ private const val WEB_MANAGER_PAGE_SCRIPT_HEAD: String = """<script>
     return "v" + value;
   }
   function accessAddress() {
-    return location.origin + "/?token=" + encodeURIComponent(token);
+    return location.origin + "/#auth=" + encodeURIComponent(token);
   }
 
   function api(path, options) {
@@ -2331,33 +2334,31 @@ private const val WEB_MANAGER_PAGE_SCRIPT_TAIL: String = """
   }
 
   function openStealthEditor(enableAfterSave) {
-    var code = (state.stealth && state.stealth.code) || "*#*#4211#*#*";
     var warning = enableAfterSave
       ? '<div class="notice warn"><b>启用后软件管理器会伪装为未安装</b><span>超级用户、模块、KPM 和设置页面会隐藏。之后只能在网页管理器输入密令或通过拨号密令关闭。</span></div>'
       : "";
     openSheet(
       enableAfterSave ? "启用隐身模式" : "设置隐身密令",
       warning + '<div class="row"><div class="row-main"><div class="row-title">隐身密令</div>' +
-        '<div class="row-detail">密令不限制长度或字符；使用拨号关闭时输入 *#*#密令#*#*。</div></div></div>' +
-        '<input id="stealthCodeInput" class="search mono" style="width:100%;margin-top:10px" type="text" ' +
-        'autocomplete="off" value="' + esc(code) + '" aria-label="隐身密令">',
+        '<div class="row-detail">服务不会回显当前密令。密令不限制长度或字符；使用拨号关闭时输入 *#*#密令#*#*。</div></div></div>' +
+        '<input id="stealthCodeInput" class="search mono" style="width:100%;margin-top:10px" type="password" ' +
+        'autocomplete="new-password" value="" placeholder="' + (enableAfterSave ? '留空则保留当前密令' : '输入新密令') + '" aria-label="隐身密令">',
       '<button class="btn primary" type="button" id="stealthSave">保存</button>' +
         '<button class="btn" type="button" data-kpm-dialog="close">取消</button>'
     );
     el("stealthSave").addEventListener("click", function () {
       var input = el("stealthCodeInput");
       var requestedCode = input.value.trim();
-      if (!stealthCodeValid(requestedCode)) {
+      if (!stealthCodeValid(requestedCode) && !enableAfterSave) {
         notify("密令不能为空", true);
         input.focus();
         return;
       }
       var button = el("stealthSave");
       button.disabled = true;
-      kpmPost("/api/stealth", {
-        enabled: enableAfterSave || !!state.stealth.enabled,
-        code: requestedCode
-      }, 30000).then(function () {
+      var payload = { enabled: enableAfterSave || !!state.stealth.enabled };
+      if (requestedCode) payload.code = requestedCode;
+      kpmPost("/api/stealth", payload, 30000).then(function () {
         closeSheet();
         notify(enableAfterSave ? "隐身模式已启用" : "隐身密令已保存");
         record(enableAfterSave ? "隐身模式：启用" : "隐身密令：更新");
@@ -2422,7 +2423,7 @@ private const val WEB_MANAGER_PAGE_SCRIPT_TAIL: String = """
         : "未启用" + (stealth.codeBackedUp ? " · 密令备份仍保留" : "");
       el("stealthToggle").checked = !!stealth.enabled;
       el("stealthToggle").disabled = false;
-      el("stealthCodeDetail").textContent = stealth.code || "*#*#4211#*#*";
+      el("stealthCodeDetail").textContent = stealth.codeBackedUp ? "已安全保存（网页不回显）" : "尚未备份";
       renderManagerSettings(data.manager, data.managerSettingsError || "");
       loadDynamicManagerSummary().catch(function () { /* 行内已提示 */ });
       state.assets = data.assets || { wallpapers: {}, navIcons: {} };
@@ -2603,7 +2604,7 @@ private const val WEB_MANAGER_PAGE_SCRIPT_TAIL: String = """
     }
     var buttons = [];
     if (module.webui && module.enabled) {
-      buttons.push('<button class="btn small primary" type="button" data-module="' + esc(id) + '" data-action="webui">打开 WebUI</button>');
+      buttons.push('<span class="tag neutral">WebUI 仅限软件管理器</span>');
     }
     if (module.action && module.enabled) {
       var running = module.actionJobId ? "运行中…" : "执行";
@@ -2686,35 +2687,9 @@ private const val WEB_MANAGER_PAGE_SCRIPT_TAIL: String = """
       });
   }
 
-  /**
-   * Opens the module WebUI in a new tab.
-   *
-   * The tab is created **synchronously** in the click handler: a `window.open`
-   * that happens after an await runs outside the user-gesture context and is
-   * killed by mobile popup blockers, which is what made the button look dead.
-   * The preflight then runs in the background purely to explain failures, and
-   * the server answers a failed navigation with a readable HTML page.
-   */
   function openWebUi(id) {
-    var url = PREFIX + "/webui/" + encodeURIComponent(id) + "/";
-    var win = null;
-    try { win = window.open(url, "_blank"); } catch (_) { win = null; }
-    if (!win) {
-      notify("浏览器拦截了新标签页，正在当前页打开");
-      record("打开 WebUI：" + id);
-      location.href = url;
-      return;
-    }
-    try { win.opener = null; } catch (_) { }
-    notify("已在新标签页打开模块 WebUI");
-    record("打开 WebUI：" + id);
-    api("/api/webui/module-info?module=" + encodeURIComponent(id), { timeout: 30000 })
-      .catch(function (error) {
-        var message = "模块 WebUI 预检失败：" + (error.message || "未知错误") +
-          (error.code ? " [" + error.code + "]" : "") + "（可在设置页运行诊断）";
-        notify(message, true);
-        record(message, true);
-      });
+    notify("为防止模块网页继承管理令牌，请在 ApkeSU 软件管理器内打开模块 WebUI", true);
+    record("已拦截网页管理器中的模块 WebUI：" + id, true);
   }
 
   // ------------------------------------------------------------ 执行控制台

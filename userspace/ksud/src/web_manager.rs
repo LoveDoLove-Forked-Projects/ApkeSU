@@ -1,5 +1,6 @@
 use anyhow::{Context, Result, bail, ensure};
 use log::{error, info, warn};
+use p256::ecdsa::{Signature, VerifyingKey, signature::Verifier};
 use rust_embed::RustEmbed;
 use serde_json::{Value, json};
 use std::borrow::Cow;
@@ -21,21 +22,23 @@ use crate::{
 };
 
 const DEFAULT_PORT: u16 = 10_240;
-const REST_API_VERSION: u32 = 1;
-const REST_API_PREFIX: &str = "/api/v1";
-const CONFIG_SCHEMA_VERSION: u32 = 1;
+const REST_API_VERSION: u32 = 2;
+const REST_API_PREFIX: &str = "/api/v2";
+const CONFIG_SCHEMA_VERSION: u32 = 2;
 const MAX_HEADER_BYTES: usize = 16 * 1024;
-const MAX_BODY_BYTES: usize = 8 * 1024 * 1024;
-const MAX_ASSET_BYTES: usize = MAX_BODY_BYTES;
+const MAX_JSON_BODY_BYTES: usize = 64 * 1024;
+const MAX_ASSET_BYTES: usize = 8 * 1024 * 1024;
 const MAX_KPM_BYTES: usize = 4 * 1024 * 1024;
 const MAX_CLIENTS: usize = 8;
 const IO_TIMEOUT: Duration = Duration::from_secs(8);
 const START_TIMEOUT: Duration = Duration::from_secs(3);
+const PAIRING_WINDOW_SECS: u64 = 120;
+const SIGNATURE_WINDOW_SECS: u64 = 60;
+const AUTH_NONCE_BYTES: usize = 16;
+const ASSET_COOKIE_NAME: &str = "apkesu_asset_session";
 /// 主页系统信息探测里外部命令（ksud 自身、ksu_susfs）的硬超时。
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(8);
 const SYSTEM_CACHE_TTL: Duration = Duration::from_mins(1);
-const COOKIE_NAME: &str = "apkesu_web_token";
-const TOKEN_PATH_PREFIX: &str = "/w/";
 const PACKAGES_LIST_PATH: &str = "/data/system/packages.list";
 const APP_METADATA_PATH: &str = "/data/adb/ksu/web_manager_apps/apps.json";
 const APP_ICON_DIR: &str = "/data/adb/ksu/web_manager_apps/icons";
@@ -117,6 +120,7 @@ const FEATURE_TOGGLES: [(&str, &str, &str, &str, Option<&str>); 7] = [
 
 static SHUTDOWN: AtomicBool = AtomicBool::new(false);
 static WRITE_LOCK: Mutex<()> = Mutex::new(());
+static AUTH_NONCES: Mutex<Option<HashMap<String, u64>>> = Mutex::new(None);
 /// 主页系统信息探测（SELinux/Seccomp/KPM/SUSFS）的短缓存，避免每次刷新都跑外部命令。
 static SYSTEM_CACHE: Mutex<Option<(Instant, Value)>> = Mutex::new(None);
 
@@ -129,7 +133,10 @@ struct WebManagerConfig {
     schema_version: u32,
     enabled: bool,
     port: u16,
-    token: String,
+    pairing_token: String,
+    pairing_expires_at: u64,
+    auth_key_id: String,
+    auth_public_key: String,
 }
 
 impl Default for WebManagerConfig {
@@ -138,7 +145,10 @@ impl Default for WebManagerConfig {
             schema_version: CONFIG_SCHEMA_VERSION,
             enabled: false,
             port: DEFAULT_PORT,
-            token: String::new(),
+            pairing_token: String::new(),
+            pairing_expires_at: 0,
+            auth_key_id: String::new(),
+            auth_public_key: String::new(),
         }
     }
 }
@@ -163,7 +173,7 @@ struct Response {
     status: u16,
     content_type: &'static str,
     body: Vec<u8>,
-    set_cookie: Option<String>,
+    asset_cookie: Option<String>,
 }
 
 impl Response {
@@ -174,7 +184,7 @@ impl Response {
             content_type: "application/json; charset=utf-8",
             body: serde_json::to_vec(&value)
                 .unwrap_or_else(|_| b"{\"error\":\"serialization failed\"}".to_vec()),
-            set_cookie: None,
+            asset_cookie: None,
         }
     }
 
@@ -183,7 +193,7 @@ impl Response {
             status,
             content_type,
             body: body.into(),
-            set_cookie: None,
+            asset_cookie: None,
         }
     }
 
@@ -235,6 +245,7 @@ impl Drop for ClientGuard {
 #[derive(Clone)]
 struct ServerContext {
     config: WebManagerConfig,
+    asset_token: String,
 }
 
 extern "C" fn shutdown_signal_handler(_signal: libc::c_int) {
@@ -293,22 +304,36 @@ fn generate_token() -> Result<String> {
     Ok(token)
 }
 
-fn normalize_config(mut config: WebManagerConfig) -> Result<WebManagerConfig> {
+fn normalize_config(mut config: WebManagerConfig) -> WebManagerConfig {
     config.schema_version = CONFIG_SCHEMA_VERSION;
     if config.port < 1024 {
         config.port = DEFAULT_PORT;
     }
-    if config.token.len() != 64 || !config.token.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-        config.token = generate_token()?;
+    if !is_hex_of_len(&config.pairing_token, 64) {
+        config.pairing_token.clear();
     }
-    config.token.make_ascii_lowercase();
-    Ok(config)
+    config.pairing_token.make_ascii_lowercase();
+    if !is_hex_of_len(&config.auth_key_id, 64)
+        || !is_hex_of_len(&config.auth_public_key, 130)
+        || !config.auth_public_key.starts_with("04")
+    {
+        config.auth_key_id.clear();
+        config.auth_public_key.clear();
+    } else {
+        config.auth_key_id.make_ascii_lowercase();
+        config.auth_public_key.make_ascii_lowercase();
+    }
+    config
+}
+
+fn is_hex_of_len(value: &str, len: usize) -> bool {
+    value.len() == len && value.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
 fn read_config() -> Result<WebManagerConfig> {
     let path = Path::new(defs::WEB_MANAGER_CONFIG_PATH);
     if !path.is_file() {
-        return normalize_config(WebManagerConfig::default());
+        return Ok(normalize_config(WebManagerConfig::default()));
     }
     let bytes = fs::read(path).with_context(|| format!("read {}", path.display()))?;
     let value: Value = serde_json::from_slice(&bytes).context("parse web manager config")?;
@@ -328,13 +353,28 @@ fn read_config() -> Result<WebManagerConfig> {
             .get("port")
             .and_then(Value::as_u64)
             .unwrap_or_else(|| u64::from(DEFAULT_PORT)) as u16,
-        token: object
-            .get("token")
+        pairing_token: object
+            .get("pairingToken")
+            .or_else(|| object.get("token"))
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+        pairing_expires_at: object
+            .get("pairingExpiresAt")
+            .and_then(Value::as_u64)
+            .unwrap_or_default(),
+        auth_key_id: object
+            .get("authKeyId")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+        auth_public_key: object
+            .get("authPublicKey")
             .and_then(Value::as_str)
             .unwrap_or_default()
             .to_string(),
     };
-    normalize_config(config)
+    Ok(normalize_config(config))
 }
 
 fn write_config(config: &WebManagerConfig) -> Result<()> {
@@ -343,7 +383,10 @@ fn write_config(config: &WebManagerConfig) -> Result<()> {
         "schemaVersion": config.schema_version,
         "enabled": config.enabled,
         "port": config.port,
-        "token": config.token,
+        "pairingToken": config.pairing_token,
+        "pairingExpiresAt": config.pairing_expires_at,
+        "authKeyId": config.auth_key_id,
+        "authPublicKey": config.auth_public_key,
     }))
     .context("serialize web manager config")?;
     atomic_write(Path::new(defs::WEB_MANAGER_CONFIG_PATH), &bytes, 0o600)
@@ -405,17 +448,18 @@ fn public_status(config: &WebManagerConfig) -> Value {
         "running": running,
         "port": port,
         "pid": state.as_ref().map(|value| value.pid),
-        "url": running.then(|| authenticated_url(config, port)),
+        "url": running.then(|| base_url(port)),
         "persistent": true,
         "error": Value::Null,
     })
 }
 
-fn authenticated_url(config: &WebManagerConfig, port: u16) -> String {
-    format!(
-        "http://127.0.0.1:{port}{TOKEN_PATH_PREFIX}{}/",
-        config.token
-    )
+fn base_url(port: u16) -> String {
+    format!("http://127.0.0.1:{port}/")
+}
+
+fn pairing_url(config: &WebManagerConfig, port: u16) -> String {
+    format!("{}#pair={}", base_url(port), config.pairing_token)
 }
 
 fn status_running(status: &Value) -> bool {
@@ -499,28 +543,27 @@ pub fn print_status() -> Result<()> {
 }
 
 pub fn print_url() -> Result<()> {
-    let config = read_config()?;
+    let mut config = read_config()?;
     let status = public_status(&config);
     ensure!(status_running(&status), "web manager is not running");
     let port = status
         .get("port")
         .and_then(Value::as_u64)
         .context("web manager status has no port")? as u16;
-    println!("{}", authenticated_url(&config, port));
+    config.pairing_token = generate_token()?;
+    config.pairing_expires_at = unix_timestamp() + PAIRING_WINDOW_SECS;
+    write_config(&config)?;
+    println!("{}", pairing_url(&config, port));
     Ok(())
 }
 
 pub fn rotate_token() -> Result<()> {
     let mut config = read_config()?;
-    let was_running = status_running(&public_status(&config));
-    if was_running {
-        stop()?;
-    }
-    config.token = generate_token()?;
+    config.auth_key_id.clear();
+    config.auth_public_key.clear();
+    config.pairing_token.clear();
+    config.pairing_expires_at = 0;
     write_config(&config)?;
-    if was_running {
-        start_background(&config)?;
-    }
     print_url().or_else(|_| print_status())
 }
 
@@ -578,7 +621,10 @@ fn run_server(config: WebManagerConfig) -> Result<()> {
     };
     write_state(&state)?;
     let _state_guard = StateGuard;
-    let context = Arc::new(ServerContext { config });
+    let context = Arc::new(ServerContext {
+        config,
+        asset_token: generate_token()?,
+    });
     let active_clients = Arc::new(AtomicUsize::new(0));
     info!(
         "persistent web manager listening on 127.0.0.1:{}",
@@ -597,7 +643,7 @@ fn run_server(config: WebManagerConfig) -> Result<()> {
                     let mut stream = stream;
                     let _ = write_response(
                         &mut stream,
-                        Response::error(503, "busy", "网页管理器正忙，请稍后重试"),
+                        &Response::error(503, "busy", "网页管理器正忙，请稍后重试"),
                     );
                     continue;
                 }
@@ -686,7 +732,7 @@ fn read_request(stream: &mut TcpStream) -> Result<Request> {
         value.parse::<usize>().context("invalid Content-Length")
     })?;
     ensure!(
-        content_length <= MAX_BODY_BYTES,
+        content_length <= request_body_limit(&method, &target),
         "HTTP request body is too large"
     );
     while buffer.len() - header_end < content_length {
@@ -714,10 +760,10 @@ fn handle_client(mut stream: TcpStream, context: &ServerContext) -> Result<()> {
         Ok(request) => route_request(&request, context),
         Err(error) => Response::error(400, "bad_request", error.to_string()),
     };
-    write_response(&mut stream, response)
+    write_response(&mut stream, &response)
 }
 
-fn write_response(stream: &mut TcpStream, response: Response) -> Result<()> {
+fn write_response(stream: &mut TcpStream, response: &Response) -> Result<()> {
     let reason = match response.status {
         200 => "OK",
         202 => "Accepted",
@@ -734,18 +780,23 @@ fn write_response(stream: &mut TcpStream, response: Response) -> Result<()> {
         503 => "Service Unavailable",
         _ => "Error",
     };
-    let cookie = response
-        .set_cookie
-        .map(|value| format!("Set-Cookie: {value}\r\n"))
+    let asset_cookie = response
+        .asset_cookie
+        .as_ref()
+        .map(|token| {
+            format!(
+                "Set-Cookie: {ASSET_COOKIE_NAME}={token}; Path=/api/; Max-Age=300; HttpOnly; SameSite=Strict\r\n"
+            )
+        })
         .unwrap_or_default();
     let header = format!(
-        "HTTP/1.1 {} {}\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\nCache-Control: no-store\r\nX-Ksud-Api-Version: {}\r\nService-Worker-Allowed: /\r\nX-Content-Type-Options: nosniff\r\nX-Frame-Options: DENY\r\nReferrer-Policy: no-referrer\r\nContent-Security-Policy: default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; connect-src 'self'; worker-src 'self'; manifest-src 'self'; frame-ancestors 'none'\r\n{}\r\n",
+        "HTTP/1.1 {} {}\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\nCache-Control: no-store\r\n{}X-Ksud-Api-Version: {}\r\nService-Worker-Allowed: /\r\nX-Content-Type-Options: nosniff\r\nX-Frame-Options: DENY\r\nReferrer-Policy: no-referrer\r\nPermissions-Policy: camera=(), microphone=(), geolocation=(), usb=(), payment=()\r\nCross-Origin-Opener-Policy: same-origin\r\nCross-Origin-Resource-Policy: same-origin\r\nContent-Security-Policy: default-src 'self'; img-src 'self' data: blob:; style-src 'self'; script-src 'self'; connect-src 'self'; worker-src 'self'; manifest-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'\r\n\r\n",
         response.status,
         reason,
         response.content_type,
         response.body.len(),
+        asset_cookie,
         REST_API_VERSION,
-        cookie,
     );
     stream.write_all(header.as_bytes())?;
     stream.write_all(&response.body)?;
@@ -754,25 +805,57 @@ fn write_response(stream: &mut TcpStream, response: Response) -> Result<()> {
 }
 
 fn route_request(request: &Request, context: &ServerContext) -> Response {
+    if !host_is_allowed(request, context.config.port) {
+        return Response::error(403, "invalid_host", "网页管理器只接受本机地址访问");
+    }
     if !origin_is_allowed(request, context.config.port) {
         return Response::error(403, "invalid_origin", "请求来源不是当前本机网页管理器");
     }
     let raw_path = request.target.split('?').next().unwrap_or("/");
-    let (path, path_token) = strip_token_path(raw_path);
-    let supplied_token = path_token
-        .as_deref()
-        .or_else(|| bearer_token(request))
-        .or_else(|| cookie_token(request));
-    if !supplied_token.is_some_and(|token| constant_time_eq(token, &context.config.token)) {
-        return unauthorized_response();
+    let path = normalize_api_path(raw_path);
+    if request.method == "GET"
+        && matches!(
+            path.as_ref(),
+            "/" | "/index.html"
+                | "/app.js"
+                | "/style.css"
+                | "/manifest.webmanifest"
+                | "/sw.js"
+                | "/pwa-icon-192.png"
+                | "/pwa-icon-512.png"
+                | "/pwa-icon.svg"
+        )
+    {
+        return route_authenticated(request, path.as_ref(), context);
     }
-    let mut response = route_authenticated(request, &path, context);
-    if path_token.is_some() {
-        response.set_cookie = Some(format!(
-            "{COOKIE_NAME}={}; Path=/; Max-Age=31536000; HttpOnly; SameSite=Strict",
-            context.config.token
-        ));
+    if request.method == "GET" && path == "/api/auth/status" {
+        return auth_status_response();
     }
+    if request.method == "POST" && path == "/api/auth/pair" {
+        return pair_auth_response(&request.body);
+    }
+    if request.method == "GET"
+        && is_passive_asset_path(path.as_ref())
+        && request
+            .headers
+            .get("cookie")
+            .and_then(|value| named_cookie(value, ASSET_COOKIE_NAME))
+            .is_some_and(|value| constant_time_eq(value, &context.asset_token))
+    {
+        return route_authenticated(request, path.as_ref(), context);
+    }
+    let config = match read_config() {
+        Ok(value) => value,
+        Err(error) => {
+            warn!("web manager authentication config is unavailable: {error:#}");
+            return Response::error(503, "auth_config_unavailable", "签名鉴权配置暂时不可用");
+        }
+    };
+    if let Err(code) = verify_signed_request(request, &config) {
+        return Response::error(401, code, "请求缺少有效的设备签名，或签名已过期");
+    }
+    let mut response = route_authenticated(request, path.as_ref(), context);
+    response.asset_cookie = Some(context.asset_token.clone());
     response
 }
 
@@ -840,7 +923,11 @@ fn route_authenticated(request: &Request, path: &str, context: &ServerContext) -
         _ if request.method == "POST" && path.starts_with("/api/superuser/") => {
             superuser_action_response(path, &request.body)
         }
-        _ if request.method == "GET" && path.starts_with("/webui/") => module_webui_response(path),
+        _ if request.method == "GET" && path.starts_with("/webui/") => Response::error(
+            403,
+            "module_webui_isolated",
+            "为防止模块网页继承管理权限，请在 ApkeSU 软件管理器内打开模块 WebUI",
+        ),
         _ => Response::error(404, "not_found", "没有这个接口"),
     }
 }
@@ -866,6 +953,21 @@ fn normalize_api_path(path: &str) -> Cow<'_, str> {
         Some("") => Cow::Borrowed("/api/meta"),
         Some(suffix) if suffix.starts_with('/') => Cow::Owned(format!("/api{suffix}")),
         _ => Cow::Borrowed(path),
+    }
+}
+
+fn request_body_limit(method: &str, target: &str) -> usize {
+    if method != "POST" {
+        return MAX_JSON_BODY_BYTES;
+    }
+    let raw_path = target.split('?').next().unwrap_or("/");
+    let path = normalize_api_path(raw_path);
+    if path == "/api/kpm/import" {
+        MAX_KPM_BYTES
+    } else if path.starts_with("/api/assets/") {
+        MAX_ASSET_BYTES
+    } else {
+        MAX_JSON_BODY_BYTES
     }
 }
 
@@ -1276,14 +1378,6 @@ fn asset_meta_response(body: &[u8]) -> Response {
     }
 }
 
-fn unauthorized_response() -> Response {
-    Response::text(
-        401,
-        "text/html; charset=utf-8",
-        "<!doctype html><meta charset=utf-8><title>ApkeSU</title><style>body{font-family:sans-serif;padding:32px;background:#101412;color:#eef4ef}main{max-width:520px;margin:auto}code{color:#7bd99b}</style><main><h1>需要认证</h1><p>请从 ApkeSU 或 <code>ksud web-manager url</code> 打开此页面。</p></main>",
-    )
-}
-
 fn origin_is_allowed(request: &Request, port: u16) -> bool {
     let Some(origin) = request.headers.get("origin") else {
         return true;
@@ -1291,34 +1385,197 @@ fn origin_is_allowed(request: &Request, port: u16) -> bool {
     origin == &format!("http://127.0.0.1:{port}") || origin == &format!("http://localhost:{port}")
 }
 
-fn strip_token_path(path: &str) -> (String, Option<String>) {
-    let Some(rest) = path.strip_prefix(TOKEN_PATH_PREFIX) else {
-        return (path.to_string(), None);
-    };
-    let (token, suffix) = rest.split_once('/').unwrap_or((rest, ""));
-    if token.len() != 64 || !token.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-        return (path.to_string(), None);
-    }
-    let route = if suffix.is_empty() {
-        "/".to_string()
-    } else {
-        format!("/{suffix}")
-    };
-    (route, Some(token.to_ascii_lowercase()))
-}
-
-fn bearer_token(request: &Request) -> Option<&str> {
-    request
-        .headers
-        .get("authorization")?
-        .strip_prefix("Bearer ")
-}
-
-fn cookie_token(request: &Request) -> Option<&str> {
-    request.headers.get("cookie")?.split(';').find_map(|part| {
-        let (name, value) = part.trim().split_once('=')?;
-        (name == COOKIE_NAME).then_some(value)
+fn host_is_allowed(request: &Request, port: u16) -> bool {
+    request.headers.get("host").is_some_and(|host| {
+        host.eq_ignore_ascii_case(&format!("127.0.0.1:{port}"))
+            || host.eq_ignore_ascii_case(&format!("localhost:{port}"))
     })
+}
+
+fn is_passive_asset_path(path: &str) -> bool {
+    path.starts_with("/api/apps/icon/") || path.starts_with("/api/assets/")
+}
+
+fn named_cookie<'a>(header: &'a str, expected: &str) -> Option<&'a str> {
+    header.split(';').find_map(|part| {
+        let (name, value) = part.trim().split_once('=')?;
+        (name == expected && !value.is_empty()).then_some(value)
+    })
+}
+
+fn auth_status_response() -> Response {
+    match read_config() {
+        Ok(config) => Response::json(
+            200,
+            json!({
+                "ok": true,
+                "authMode": "ecdsa-p256",
+                "paired": !config.auth_public_key.is_empty(),
+                "keyId": (!config.auth_key_id.is_empty()).then_some(config.auth_key_id),
+                "pairingWindowSeconds": PAIRING_WINDOW_SECS,
+            }),
+        ),
+        Err(error) => {
+            warn!("web manager authentication status is unavailable: {error:#}");
+            Response::error(503, "auth_config_unavailable", "签名鉴权配置暂时不可用")
+        }
+    }
+}
+
+fn pair_auth_response(body: &[u8]) -> Response {
+    let payload = match parse_json_body(body) {
+        Ok(value) => value,
+        Err(error) => return Response::error(400, "invalid_json", error.to_string()),
+    };
+    let Some(pairing_token) = payload.get("pairingToken").and_then(Value::as_str) else {
+        return Response::error(400, "pairing_token_required", "缺少一次性配对令牌");
+    };
+    let Some(public_key) = payload.get("publicKey").and_then(Value::as_str) else {
+        return Response::error(400, "public_key_required", "缺少浏览器签名公钥");
+    };
+    let Some(public_key_bytes) = decode_hex(public_key) else {
+        return Response::error(400, "invalid_public_key", "浏览器签名公钥格式无效");
+    };
+    if public_key_bytes.len() != 65
+        || public_key_bytes.first() != Some(&4)
+        || VerifyingKey::from_sec1_bytes(&public_key_bytes).is_err()
+    {
+        return Response::error(
+            400,
+            "invalid_public_key",
+            "浏览器签名公钥不是有效的 P-256 公钥",
+        );
+    }
+    let key_id = sha256::digest(&public_key_bytes);
+    if payload
+        .get("keyId")
+        .and_then(Value::as_str)
+        .is_some_and(|value| !constant_time_eq(value, &key_id))
+    {
+        return Response::error(400, "key_id_mismatch", "浏览器公钥标识不匹配");
+    }
+    let _guard = WRITE_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut config = match read_config() {
+        Ok(value) => value,
+        Err(error) => {
+            warn!("web manager pairing config is unavailable: {error:#}");
+            return Response::error(503, "auth_config_unavailable", "签名鉴权配置暂时不可用");
+        }
+    };
+    let now = unix_timestamp();
+    if config.pairing_expires_at < now
+        || config.pairing_token.is_empty()
+        || !constant_time_eq(pairing_token, &config.pairing_token)
+    {
+        return Response::error(403, "pairing_token_invalid", "配对令牌无效、已使用或已过期");
+    }
+    config.auth_key_id.clone_from(&key_id);
+    config.auth_public_key = public_key.to_ascii_lowercase();
+    config.pairing_token.clear();
+    config.pairing_expires_at = 0;
+    if let Err(error) = write_config(&config) {
+        warn!("failed to persist web manager signing key: {error:#}");
+        return Response::error(500, "pairing_save_failed", "无法保存浏览器签名身份");
+    }
+    AUTH_NONCES
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .take();
+    Response::json(200, json!({ "ok": true, "paired": true, "keyId": key_id }))
+}
+
+fn verify_signed_request(request: &Request, config: &WebManagerConfig) -> Result<(), &'static str> {
+    if config.auth_public_key.is_empty() || config.auth_key_id.is_empty() {
+        return Err("device_not_paired");
+    }
+    let key_id = request
+        .headers
+        .get("x-apkesu-key-id")
+        .ok_or("signature_required")?;
+    if !constant_time_eq(key_id, &config.auth_key_id) {
+        return Err("unknown_signing_key");
+    }
+    let timestamp = request
+        .headers
+        .get("x-apkesu-timestamp")
+        .and_then(|value| value.parse::<u64>().ok())
+        .ok_or("invalid_signature_timestamp")?;
+    let now = unix_timestamp();
+    if now.abs_diff(timestamp) > SIGNATURE_WINDOW_SECS {
+        return Err("signature_expired");
+    }
+    let nonce = request
+        .headers
+        .get("x-apkesu-nonce")
+        .filter(|value| is_hex_of_len(value, AUTH_NONCE_BYTES * 2))
+        .ok_or("invalid_signature_nonce")?;
+    let signature = request
+        .headers
+        .get("x-apkesu-signature")
+        .and_then(|value| decode_hex(value))
+        .and_then(|bytes| Signature::from_slice(&bytes).ok())
+        .ok_or("invalid_signature")?;
+    let signature = signature.normalize_s().unwrap_or(signature);
+    let public_key = decode_hex(&config.auth_public_key).ok_or("invalid_server_key")?;
+    let verifying_key =
+        VerifyingKey::from_sec1_bytes(&public_key).map_err(|_| "invalid_server_key")?;
+    let canonical = signature_payload(
+        &request.method,
+        &request.target,
+        &request.body,
+        timestamp,
+        nonce,
+    );
+    verifying_key
+        .verify(canonical.as_bytes(), &signature)
+        .map_err(|_| "signature_mismatch")?;
+    if register_auth_nonce(nonce, now) {
+        return Err("signature_replayed");
+    }
+    Ok(())
+}
+
+fn register_auth_nonce(nonce: &str, now: u64) -> bool {
+    let mut nonces = AUTH_NONCES
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let replayed = {
+        let entries = nonces.get_or_insert_with(HashMap::new);
+        entries.retain(|_, seen_at| now.saturating_sub(*seen_at) <= SIGNATURE_WINDOW_SECS);
+        entries.insert(nonce.to_owned(), now).is_some()
+    };
+    drop(nonces);
+    replayed
+}
+
+fn signature_payload(
+    method: &str,
+    target: &str,
+    body: &[u8],
+    timestamp: u64,
+    nonce: &str,
+) -> String {
+    format!(
+        "APKESU-SIGN-V1\n{method}\n{target}\n{}\n{timestamp}\n{nonce}",
+        sha256::digest(body)
+    )
+}
+
+fn decode_hex(value: &str) -> Option<Vec<u8>> {
+    if !value.len().is_multiple_of(2) || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return None;
+    }
+    value
+        .as_bytes()
+        .chunks_exact(2)
+        .map(|pair| {
+            let high = (pair[0] as char).to_digit(16)?;
+            let low = (pair[1] as char).to_digit(16)?;
+            Some(((high << 4) | low) as u8)
+        })
+        .collect()
 }
 
 fn constant_time_eq(left: &str, right: &str) -> bool {
@@ -2246,7 +2503,7 @@ fn settings_response(context: &ServerContext) -> Response {
             "enabled": persisted_auto_start(context),
             "port": context.config.port,
             "bindAddress": "127.0.0.1",
-            "authentication": "token-cookie",
+            "authentication": "ECDSA P-256 signed requests",
             "configPath": defs::WEB_MANAGER_CONFIG_PATH,
             "assets": assets_json(),
             "assetCatalog": asset_catalog_json(),
@@ -2574,7 +2831,6 @@ fn stealth_status_json() -> Value {
     json!({
         "enabled": Path::new(STEALTH_MODE_PATH).is_file(),
         "codeBackedUp": stored_code.is_some(),
-        "code": stored_code.unwrap_or_else(|| DEFAULT_STEALTH_CODE.to_string()),
     })
 }
 
@@ -2586,7 +2842,6 @@ fn stealth_status_response() -> Response {
             "ok": true,
             "enabled": status["enabled"],
             "codeBackedUp": status["codeBackedUp"],
-            "code": status["code"],
         }),
     )
 }
@@ -2738,7 +2993,6 @@ fn stealth_action_response(body: &[u8]) -> Response {
             "ok": true,
             "enabled": enabled,
             "codeBackedUp": true,
-            "code": code,
         }),
     )
 }
@@ -2761,7 +3015,6 @@ fn disable_stealth_with_code(requested_code: &str) -> Response {
             "ok": true,
             "enabled": false,
             "codeBackedUp": true,
-            "code": code,
         }),
     )
 }
@@ -2876,87 +3129,78 @@ fn run_reboot_command(program: &str, arguments: &[&str]) -> Result<()> {
     Ok(())
 }
 
-fn module_webui_response(path: &str) -> Response {
-    let suffix = path.trim_start_matches("/webui/");
-    let (encoded_id, relative) = suffix.split_once('/').unwrap_or((suffix, "index.html"));
-    let Some(module_id) = percent_decode(encoded_id) else {
-        return Response::error(400, "invalid_module_id", "模块 ID 编码无效");
-    };
-    if module::validate_module_id(&module_id).is_err() {
-        return Response::error(404, "webui_not_found", "模块 WebUI 不存在");
-    }
-    let relative = if relative.is_empty() {
-        "index.html"
-    } else {
-        relative
-    };
-    if relative.len() > 2048
-        || relative.contains('\0')
-        || relative.contains('\\')
-        || relative
-            .split('/')
-            .any(|part| part.is_empty() || matches!(part, "." | ".."))
-    {
-        return Response::error(400, "invalid_webui_path", "WebUI 路径无效");
-    }
-    let root = Path::new(defs::MODULE_DIR)
-        .join(&module_id)
-        .join(defs::MODULE_WEB_DIR);
-    let candidate = root.join(relative);
-    let Ok(canonical_root) = root.canonicalize() else {
-        return Response::error(404, "webui_not_found", "模块 WebUI 不存在");
-    };
-    let canonical_candidate = match candidate.canonicalize() {
-        Ok(value) if value.starts_with(&canonical_root) && value.is_file() => value,
-        _ => return Response::error(404, "webui_asset_not_found", "WebUI 资源不存在"),
-    };
-    match fs::read(&canonical_candidate) {
-        Ok(bytes) => Response::text(200, mime_type(&canonical_candidate), bytes),
-        Err(error) => Response::error(500, "webui_read_failed", error.to_string()),
-    }
-}
-
-fn mime_type(path: &Path) -> &'static str {
-    match path.extension().and_then(|value| value.to_str()) {
-        Some("html" | "htm") => "text/html; charset=utf-8",
-        Some("css") => "text/css; charset=utf-8",
-        Some("js" | "mjs") => "application/javascript; charset=utf-8",
-        Some("json") => "application/json; charset=utf-8",
-        Some("png") => "image/png",
-        Some("jpg" | "jpeg") => "image/jpeg",
-        Some("gif") => "image/gif",
-        Some("svg") => "image/svg+xml",
-        Some("webp") => "image/webp",
-        Some("woff") => "font/woff",
-        Some("woff2") => "font/woff2",
-        _ => "application/octet-stream",
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::{
-        build_kpm_summary, build_susfs_summary, constant_time_eq, default_manager_app_settings,
-        detect_image_mime, is_valid_asset, normalize_api_path, normalize_asset_meta,
+        MAX_ASSET_BYTES, MAX_JSON_BODY_BYTES, MAX_KPM_BYTES, Request, WebManagerConfig,
+        build_kpm_summary, build_susfs_summary, constant_time_eq, decode_hex,
+        default_manager_app_settings, detect_image_mime, host_is_allowed, is_passive_asset_path,
+        is_valid_asset, named_cookie, normalize_api_path, normalize_asset_meta,
         normalize_manager_app_settings, normalize_stealth_code, parse_app_icon_path,
-        parse_asset_path, percent_decode, selinux_from_enforce, stealth_code_matches,
-        strip_token_path,
+        parse_asset_path, percent_decode, request_body_limit, selinux_from_enforce,
+        signature_payload, stealth_code_matches, unix_timestamp, verify_signed_request,
     };
+    use p256::ecdsa::{Signature, SigningKey, signature::Signer};
     use serde_json::json;
+    use std::collections::HashMap;
 
     #[test]
-    fn token_path_is_scoped() {
-        let token = "a".repeat(64);
-        let (path, parsed) = strip_token_path(&format!("/w/{token}/api/status"));
-        assert_eq!(path, "/api/status");
-        assert_eq!(parsed.as_deref(), Some(token.as_str()));
-    }
-
-    #[test]
-    fn malformed_token_path_is_not_trusted() {
-        let (path, parsed) = strip_token_path("/w/not-a-token/api/status");
-        assert_eq!(path, "/w/not-a-token/api/status");
-        assert!(parsed.is_none());
+    fn signed_requests_bind_method_target_body_time_and_nonce() {
+        let signing_key = SigningKey::from_bytes((&[7_u8; 32]).into()).unwrap();
+        let public_key = signing_key.verifying_key().to_encoded_point(false);
+        let public_key_hex = public_key
+            .as_bytes()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        let key_id = sha256::digest(public_key.as_bytes());
+        let timestamp = unix_timestamp();
+        let nonce = "00112233445566778899aabbccddeeff";
+        let body = br#"{"enabled":true}"#.to_vec();
+        let payload = signature_payload("POST", "/api/v2/features", &body, timestamp, nonce);
+        let signature: Signature = signing_key.sign(payload.as_bytes());
+        let signature_hex = signature
+            .to_bytes()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        let request = Request {
+            method: "POST".to_string(),
+            target: "/api/v2/features".to_string(),
+            headers: HashMap::from([
+                ("x-apkesu-key-id".to_string(), key_id.clone()),
+                ("x-apkesu-timestamp".to_string(), timestamp.to_string()),
+                ("x-apkesu-nonce".to_string(), nonce.to_string()),
+                ("x-apkesu-signature".to_string(), signature_hex),
+            ]),
+            body,
+        };
+        let config = WebManagerConfig {
+            schema_version: 2,
+            enabled: true,
+            port: 10_240,
+            pairing_token: String::new(),
+            pairing_expires_at: 0,
+            auth_key_id: key_id,
+            auth_public_key: public_key_hex,
+        };
+        assert_eq!(verify_signed_request(&request, &config), Ok(()));
+        assert_eq!(
+            verify_signed_request(&request, &config),
+            Err("signature_replayed")
+        );
+        let mut tampered = request;
+        tampered.body = br#"{"enabled":false}"#.to_vec();
+        tampered.headers.insert(
+            "x-apkesu-nonce".to_string(),
+            "ffeeddccbbaa99887766554433221100".to_string(),
+        );
+        assert_eq!(
+            verify_signed_request(&tampered, &config),
+            Err("signature_mismatch")
+        );
+        assert_eq!(decode_hex("00ff10"), Some(vec![0, 255, 16]));
+        assert!(decode_hex("not-hex").is_none());
     }
 
     #[test]
@@ -2976,15 +3220,75 @@ mod tests {
     }
 
     #[test]
-    fn versioned_api_routes_keep_v1_stable_and_legacy_compatible() {
-        assert_eq!(normalize_api_path("/api/v1"), "/api/meta");
-        assert_eq!(normalize_api_path("/api/v1/status"), "/api/status");
+    fn passive_asset_cookie_cannot_authorize_management_routes() {
+        assert!(is_passive_asset_path("/api/apps/icon/com.example.app"));
+        assert!(is_passive_asset_path("/api/assets/wallpaper/gki"));
+        assert!(!is_passive_asset_path("/api/assets"));
+        assert!(!is_passive_asset_path("/api/settings"));
+        assert!(!is_passive_asset_path("/api/superuser"));
         assert_eq!(
-            normalize_api_path("/api/v1/assets/wallpaper/lkm"),
+            named_cookie(
+                "other=1; apkesu_asset_session=asset-token",
+                "apkesu_asset_session"
+            ),
+            Some("asset-token")
+        );
+        assert_eq!(
+            named_cookie("apkesu_asset_session=", "apkesu_asset_session"),
+            None
+        );
+    }
+
+    #[test]
+    fn host_header_rejects_forwarded_public_hosts() {
+        let request = Request {
+            method: "GET".to_string(),
+            target: "/".to_string(),
+            headers: HashMap::from([("host".to_string(), "127.0.0.1:10240".to_string())]),
+            body: Vec::new(),
+        };
+        assert!(host_is_allowed(&request, 10_240));
+        let mut forwarded = request;
+        forwarded
+            .headers
+            .insert("host".to_string(), "device.example:10240".to_string());
+        assert!(!host_is_allowed(&forwarded, 10_240));
+    }
+
+    #[test]
+    fn large_bodies_are_reserved_for_explicit_upload_routes() {
+        assert_eq!(
+            request_body_limit("POST", "/api/v2/auth/pair"),
+            MAX_JSON_BODY_BYTES
+        );
+        assert_eq!(
+            request_body_limit("POST", "/api/v2/features"),
+            MAX_JSON_BODY_BYTES
+        );
+        assert_eq!(
+            request_body_limit("POST", "/api/v2/kpm/import"),
+            MAX_KPM_BYTES
+        );
+        assert_eq!(
+            request_body_limit("POST", "/api/v2/assets/wallpaper/gki"),
+            MAX_ASSET_BYTES
+        );
+        assert_eq!(
+            request_body_limit("GET", "/api/v2/assets/wallpaper/gki"),
+            MAX_JSON_BODY_BYTES
+        );
+    }
+
+    #[test]
+    fn versioned_api_routes_keep_v2_stable_and_legacy_compatible() {
+        assert_eq!(normalize_api_path("/api/v2"), "/api/meta");
+        assert_eq!(normalize_api_path("/api/v2/status"), "/api/status");
+        assert_eq!(
+            normalize_api_path("/api/v2/assets/wallpaper/lkm"),
             "/api/assets/wallpaper/lkm"
         );
         assert_eq!(normalize_api_path("/api/status"), "/api/status");
-        assert_eq!(normalize_api_path("/api/v10/status"), "/api/v10/status");
+        assert_eq!(normalize_api_path("/api/v1/status"), "/api/v1/status");
     }
 
     #[test]

@@ -1,11 +1,11 @@
 'use strict';
 
-const CACHE_NAME = 'apkesu-web-shell-v12';
+const CACHE_NAME = 'apkesu-web-shell-v13';
 const SHELL = [
   '/',
   '/index.html',
-  '/style.css?v=12',
-  '/app.js?v=12',
+  '/style.css?v=13',
+  '/app.js?v=13',
   '/manifest.webmanifest',
   '/pwa-icon.svg',
   '/pwa-icon-192.png',
@@ -30,6 +30,13 @@ self.addEventListener('fetch', (event) => {
   if (request.method !== 'GET') return;
   const url = new URL(request.url);
   if (url.origin !== self.location.origin) return;
+
+  // Pairing tokens are one-time credentials. Never persist a URL containing a
+  // query string in Cache Storage, browser history is cleaned by app.js.
+  if (url.search) {
+    event.respondWith(fetch(request, { cache: 'no-store' }));
+    return;
+  }
 
   // Management data must always come from the live ksud backend. Never let a
   // stale cache pretend that an operation or status query succeeded.

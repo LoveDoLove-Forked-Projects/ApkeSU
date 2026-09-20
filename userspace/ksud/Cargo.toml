@@ -19,6 +19,7 @@ which = "8"
 sha1 = "0.11"
 base16ct = { version = "0.2", features = ["alloc"] }
 sha256 = "1"
+p256 = { version = "0.13", default-features = false, features = ["ecdsa"] }
 tempfile = "3"
 chrono = "0.4"
 regex-lite = "0.1"

@@ -767,14 +767,14 @@ fun startNativeWebManager(): Boolean {
 fun setNativeWebManagerEnabled(enabled: Boolean): Boolean =
     execKsud("web-manager ${if (enabled) "enable" else "disable"}", newShell = true)
 
-/** Returns the authenticated native URL, or null when this ksud is too old/unavailable. */
+/** Returns the one-time signed-auth pairing URL, or null when ksud is too old/unavailable. */
 fun getNativeWebManagerUrl(): String? = runCatching {
     if (shouldSkipUnsafeKsudCommand()) return@runCatching null
     val output = ShellUtils.fastCmd(
         getRootShell(),
         "${shellQuote(getKsuDaemonPath())} web-manager url",
     ).trim()
-    output.takeIf { it.startsWith("http://127.0.0.1:") && it.contains("/w/") }
+    output.takeIf { it.startsWith("http://127.0.0.1:") && it.contains("/#pair=") }
 }.getOrNull()
 
 suspend fun getBuiltinMountStatus(): BuiltinMountStatus = withContext(Dispatchers.IO) {

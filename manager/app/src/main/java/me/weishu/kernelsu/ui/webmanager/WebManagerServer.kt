@@ -102,11 +102,9 @@ import android.content.ComponentName
 /**
  * Loopback HTTP console for the manager.
  *
- * Every response is gated by a random per-session token that may be presented as
- * a query parameter, an `Authorization: Bearer` header, the session cookie, or a
- * `/w/<token>/...` path prefix. The path form exists so module WebUI pages keep
- * working when a browser refuses to store the session cookie: relative module
- * assets inherit the authenticated prefix instead of relying on cookies.
+ * Management responses are gated by a random per-session token presented as an
+ * `Authorization: Bearer` header or a `/w/<token>/...` path prefix. The token is
+ * delivered in the URL fragment so it is never included in an HTTP request.
  */
 internal object WebManagerServer {
     private const val TAG = "ApkeSU-WebManager"
@@ -242,7 +240,7 @@ internal object WebManagerServer {
             }
         }
         val nextToken = ByteArray(32).also(random::nextBytes).toHex()
-        val nextExecutor = Executors.newCachedThreadPool { runnable ->
+        val nextExecutor = Executors.newFixedThreadPool(8) { runnable ->
             Thread(runnable, "ApkeSU-WebManager-Client").apply { isDaemon = true }
         }
         serverSocket = socket
@@ -354,6 +352,11 @@ internal object WebManagerServer {
                 return
             }
             val rawPath = target.path.orEmpty()
+            val method = requestParts[0].uppercase(Locale.ROOT)
+            if (!WebManagerSecurity.isAllowedHost(headers["host"], boundPort)) {
+                respond(output, 403, jsonError("web manager only accepts loopback hosts"))
+                return
+            }
             val tokenPath = WebManagerRoutes.parseTokenPath(rawPath)
             val requestRoutePath = WebManagerRoutes.routePath(rawPath)
             // Only the KPM import endpoint accepts a binary payload, so it gets a
@@ -390,17 +393,15 @@ internal object WebManagerServer {
             val currentToken = synchronized(lock) { token }
             val routePath = requestRoutePath
             val parameters = query(target.rawQuery)
+            if (method == "GET" && routePath == "/" && tokenPath == null) {
+                respond(output, HttpResponse(200, managerPage(), "text/html; charset=utf-8"))
+                return
+            }
             val headerToken = WebManagerSecurity.bearerToken(headers["authorization"])
-            val cookieToken = WebManagerSecurity.cookieToken(headers["cookie"])
-            val queryAuthenticated =
-                WebManagerSecurity.constantTimeEquals(currentToken.orEmpty(), parameters["token"])
             val pathAuthenticated = tokenPath != null &&
                 WebManagerSecurity.constantTimeEquals(currentToken.orEmpty(), tokenPath.token)
             if (currentToken == null ||
-                !(queryAuthenticated ||
-                    pathAuthenticated ||
-                    WebManagerSecurity.constantTimeEquals(currentToken, headerToken) ||
-                    WebManagerSecurity.constantTimeEquals(currentToken, cookieToken))
+                !(pathAuthenticated || WebManagerSecurity.constantTimeEquals(currentToken, headerToken))
             ) {
                 // A page navigation deserves an explanation; API clients keep
                 // getting JSON so they can handle the code.
@@ -416,7 +417,6 @@ internal object WebManagerServer {
                 return
             }
 
-            val method = requestParts[0].uppercase(Locale.ROOT)
             if (method in setOf("POST", "PUT", "PATCH", "DELETE") &&
                 !WebManagerSecurity.isAllowedOrigin(headers["origin"], boundPort)
             ) {
@@ -467,7 +467,7 @@ internal object WebManagerServer {
             }
             respond(
                 output,
-                if (queryAuthenticated || pathAuthenticated) response.copy(setCookie = true) else response,
+                response,
             )
         }
     }
@@ -489,10 +489,10 @@ internal object WebManagerServer {
             method == "GET" && path == "/" ->
                 HttpResponse(200, managerPage(), "text/html; charset=utf-8")
             method == "GET" && path == WebManagerRoutes.BRIDGE_PATH ->
-                webUiBridgeResponse(parameters["module"], tokenPrefix)
+                HttpResponse(403, jsonError("module WebUI is isolated from browser management"))
             method == "GET" && iconPackage != null -> iconResponse(iconPackage)
             method == "GET" && path.startsWith(WebManagerRoutes.WEBUI_PATH_PREFIX) ->
-                webUiAssetResponse(path, tokenPrefix, wantsHtml)
+                HttpResponse(403, jsonError("请在 ApkeSU 软件管理器内打开模块 WebUI"))
             method == "GET" && path == "/api/status" -> HttpResponse(200, statusJson())
             method == "GET" && path == "/api/modules" -> modulesResponse(
                 forceRefresh = parameters["refresh"] == "1",
@@ -550,7 +550,7 @@ internal object WebManagerServer {
                 jobSnapshotResponse(jobApi.jobId, parameters)
             method == "GET" && moduleApi?.action == "icon" -> moduleIconResponse(moduleApi.moduleId)
             method == "POST" && path == "/api/webui/exec" ->
-                webUiExecResponse(parameters["module"], body)
+                HttpResponse(403, jsonError("browser module root execution is disabled"))
             method == "POST" && path == "/api/webui/packages-info" -> webUiPackagesInfoResponse(
                 moduleId = parameters["module"],
                 body = body,
@@ -2577,7 +2577,6 @@ internal object WebManagerServer {
         return JSONObject()
             .put("enabled", rootState?.enabled ?: StealthModeStore.isEnabled())
             .put("codeBackedUp", rootState?.codeBackedUp ?: false)
-            .put("code", rootState?.code ?: StealthModeStore.code())
     }
 
     private fun handleStealthAction(body: String): HttpResponse {
@@ -2608,7 +2607,6 @@ internal object WebManagerServer {
                         .put("ok", true)
                         .put("enabled", enabled)
                         .put("codeBackedUp", true)
-                        .put("code", normalizedCode)
                         .toString(),
                 )
             },
@@ -3318,12 +3316,6 @@ internal object WebManagerServer {
             else -> "Error"
         }
         val contentLength = bodyBytes?.size?.toLong() ?: stream?.length
-        val cookie = if (response.setCookie) {
-            val currentToken = synchronized(lock) { token }.orEmpty()
-            "Set-Cookie: ${WebManagerSecurity.TOKEN_COOKIE_NAME}=$currentToken; Path=/; HttpOnly; SameSite=Strict\r\n"
-        } else {
-            ""
-        }
         val lengthHeader = contentLength?.takeIf { it >= 0 }?.let { "Content-Length: $it\r\n" }.orEmpty()
         val cacheHeader = if (response.cacheSeconds > 0) {
             "Cache-Control: private, max-age=${response.cacheSeconds}\r\n"
@@ -3333,11 +3325,14 @@ internal object WebManagerServer {
         val header = "HTTP/1.1 ${response.status} $reason\r\n" +
             "Content-Type: ${response.contentType}\r\n" +
             lengthHeader +
-            cookie +
             cacheHeader +
             "X-Content-Type-Options: nosniff\r\n" +
-            "X-Frame-Options: SAMEORIGIN\r\n" +
+            "X-Frame-Options: DENY\r\n" +
             "Referrer-Policy: ${response.referrerPolicy}\r\n" +
+            "Permissions-Policy: camera=(), microphone=(), geolocation=(), usb=(), payment=()\r\n" +
+            "Cross-Origin-Opener-Policy: same-origin\r\n" +
+            "Cross-Origin-Resource-Policy: same-origin\r\n" +
+            "Content-Security-Policy: default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'\r\n" +
             "Connection: close\r\n\r\n"
         try {
             output.write(header.toByteArray(StandardCharsets.ISO_8859_1))
@@ -3422,7 +3417,7 @@ internal object WebManagerServer {
         .put("error", message)
         .toString()
 
-    private fun url(accessToken: String): String = "http://127.0.0.1:$boundPort/?token=$accessToken"
+    private fun url(accessToken: String): String = "http://127.0.0.1:$boundPort/#auth=$accessToken"
 
     private fun ByteArray.toHex(): String = joinToString("") { byte ->
         (byte.toInt() and 0xff).toString(16).padStart(2, '0')
@@ -3433,7 +3428,6 @@ internal object WebManagerServer {
         val body: String? = null,
         val contentType: String = "application/json; charset=utf-8",
         val stream: StreamBody? = null,
-        val setCookie: Boolean = false,
         /** > 0 时改用 private max-age 缓存（仅用于自定义外观图片）。 */
         val cacheSeconds: Int = 0,
         val referrerPolicy: String = "no-referrer",

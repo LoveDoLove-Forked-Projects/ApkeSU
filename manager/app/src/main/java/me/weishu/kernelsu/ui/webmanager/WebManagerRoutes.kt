@@ -57,7 +57,7 @@ internal object WebManagerRoutes {
 
     /**
      * Splits a token-scoped request path. Returns null when the path is not
-     * token scoped, so callers keep the regular cookie/header/query auth flow.
+     * token scoped, so callers may check the Authorization header instead.
      */
     fun parseTokenPath(rawPath: String): TokenPath? {
         if (!rawPath.startsWith(TOKEN_PATH_PREFIX)) return null

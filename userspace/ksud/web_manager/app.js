@@ -2,7 +2,17 @@
   'use strict';
 
   const $ = (id) => document.getElementById(id);
-  const API_BASE = '/api/v1';
+  const API_BASE = '/api/v2';
+  const AUTH_DB = 'apkesu-web-auth-v1';
+  const AUTH_STORE = 'credentials';
+  const AUTH_RECORD = 'device-signing-key';
+  const currentUrl = new URL(window.location.href);
+  let initialPairingToken = '';
+  if (currentUrl.hash.startsWith('#pair=')) {
+    try { initialPairingToken = decodeURIComponent(currentUrl.hash.slice(6)); } catch (_) { /* invalid fragment */ }
+    history.replaceState(null, '', `${currentUrl.pathname}${currentUrl.search}`);
+  }
+  let authCredential = null;
   const state = {
     view: 'home',
     status: null,
@@ -50,22 +60,154 @@
     return `${API_BASE}${path.slice(4)}`;
   }
 
+  const bytesToHex = (bytes) => Array.from(new Uint8Array(bytes),
+    (byte) => byte.toString(16).padStart(2, '0')).join('');
+
+  function bodyBytes(body) {
+    if (body === undefined || body === null) return Promise.resolve(new Uint8Array());
+    if (typeof body === 'string') return Promise.resolve(new TextEncoder().encode(body));
+    if (body instanceof ArrayBuffer) return Promise.resolve(new Uint8Array(body));
+    if (ArrayBuffer.isView(body)) {
+      return Promise.resolve(new Uint8Array(body.buffer, body.byteOffset, body.byteLength));
+    }
+    if (body instanceof Blob) return body.arrayBuffer().then((value) => new Uint8Array(value));
+    return Promise.reject(new Error('不支持对此请求正文进行签名'));
+  }
+
+  function openAuthDatabase() {
+    return new Promise((resolve, reject) => {
+      const request = indexedDB.open(AUTH_DB, 1);
+      request.onupgradeneeded = () => {
+        if (!request.result.objectStoreNames.contains(AUTH_STORE)) {
+          request.result.createObjectStore(AUTH_STORE);
+        }
+      };
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error || new Error('无法打开签名密钥存储'));
+    });
+  }
+
+  async function readStoredCredential() {
+    const database = await openAuthDatabase();
+    try {
+      return await new Promise((resolve, reject) => {
+        const request = database.transaction(AUTH_STORE, 'readonly').objectStore(AUTH_STORE).get(AUTH_RECORD);
+        request.onsuccess = () => resolve(request.result || null);
+        request.onerror = () => reject(request.error || new Error('无法读取签名密钥'));
+      });
+    } finally {
+      database.close();
+    }
+  }
+
+  async function storeCredential(credential) {
+    const database = await openAuthDatabase();
+    try {
+      await new Promise((resolve, reject) => {
+        const transaction = database.transaction(AUTH_STORE, 'readwrite');
+        transaction.objectStore(AUTH_STORE).put(credential, AUTH_RECORD);
+        transaction.oncomplete = () => resolve();
+        transaction.onerror = () => reject(transaction.error || new Error('无法保存签名密钥'));
+        transaction.onabort = () => reject(transaction.error || new Error('签名密钥保存已中止'));
+      });
+    } finally {
+      database.close();
+    }
+  }
+
+  async function clearStoredCredential() {
+    const database = await openAuthDatabase();
+    try {
+      await new Promise((resolve, reject) => {
+        const transaction = database.transaction(AUTH_STORE, 'readwrite');
+        transaction.objectStore(AUTH_STORE).delete(AUTH_RECORD);
+        transaction.oncomplete = () => resolve();
+        transaction.onerror = () => reject(transaction.error || new Error('无法清除旧签名密钥'));
+      });
+    } finally {
+      database.close();
+    }
+  }
+
+  async function generateCredential() {
+    const generated = await crypto.subtle.generateKey(
+      { name: 'ECDSA', namedCurve: 'P-256' },
+      true,
+      ['sign', 'verify'],
+    );
+    const publicKey = await crypto.subtle.exportKey('raw', generated.publicKey);
+    const privateKeyBytes = await crypto.subtle.exportKey('pkcs8', generated.privateKey);
+    const privateKey = await crypto.subtle.importKey(
+      'pkcs8',
+      privateKeyBytes,
+      { name: 'ECDSA', namedCurve: 'P-256' },
+      false,
+      ['sign'],
+    );
+    const keyId = bytesToHex(await crypto.subtle.digest('SHA-256', publicKey));
+    return { keyId, publicKey: bytesToHex(publicKey), privateKey, createdAt: Date.now() };
+  }
+
+  async function publicApi(path, options = {}) {
+    const response = await fetch(versionedApiPath(path), {
+      ...options,
+      cache: 'no-store',
+      credentials: 'omit',
+      referrerPolicy: 'no-referrer',
+      headers: { Accept: 'application/json', ...(options.body ? { 'Content-Type': 'application/json' } : {}) },
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error((data.error && data.error.message) || `认证请求失败 (${response.status})`);
+    }
+    return data;
+  }
+
+  async function signedHeaders(method, target, body) {
+    if (!authCredential || !authCredential.privateKey) throw new Error('当前浏览器尚未完成设备签名配对');
+    const timestamp = Math.floor(Date.now() / 1000).toString();
+    const nonceBytes = crypto.getRandomValues(new Uint8Array(16));
+    const nonce = bytesToHex(nonceBytes);
+    const digest = bytesToHex(await crypto.subtle.digest('SHA-256', await bodyBytes(body)));
+    const payload = `APKESU-SIGN-V1\n${method}\n${target}\n${digest}\n${timestamp}\n${nonce}`;
+    const signature = await crypto.subtle.sign(
+      { name: 'ECDSA', hash: 'SHA-256' },
+      authCredential.privateKey,
+      new TextEncoder().encode(payload),
+    );
+    return {
+      'X-ApkeSU-Key-Id': authCredential.keyId,
+      'X-ApkeSU-Timestamp': timestamp,
+      'X-ApkeSU-Nonce': nonce,
+      'X-ApkeSU-Signature': bytesToHex(signature),
+    };
+  }
+
   async function api(path, options = {}) {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), options.timeout || 12000);
     try {
-      const response = await fetch(versionedApiPath(path), {
+      const target = versionedApiPath(path);
+      const method = String(options.method || 'GET').toUpperCase();
+      const signatureHeaders = await signedHeaders(method, target, options.body);
+      const response = await fetch(target, {
         ...options,
+        method,
         signal: controller.signal,
+        cache: 'no-store',
+        credentials: 'same-origin',
+        referrerPolicy: 'no-referrer',
         headers: {
           Accept: 'application/json',
-          ...(options.body ? { 'Content-Type': 'application/json' } : {}),
+          ...(typeof options.body === 'string' ? { 'Content-Type': 'application/json' } : {}),
+          ...signatureHeaders,
           ...(options.headers || {}),
         },
       });
       const data = await response.json().catch(() => ({}));
       if (!response.ok) {
         const message = data.error && data.error.message;
+        if (response.status === 401) showAuthGate('签名验证失败', message || '请从 ApkeSU 重新打开并配对此浏览器。', true);
         throw new Error(message || `请求失败 (${response.status})`);
       }
       return data;
@@ -74,6 +216,65 @@
       throw error;
     } finally {
       clearTimeout(timer);
+    }
+  }
+
+  function showAuthGate(title, detail, retry = false) {
+    $('auth-title').textContent = title;
+    $('auth-detail').textContent = detail;
+    $('auth-retry').classList.toggle('hidden', !retry);
+    $('auth-gate').classList.remove('hidden');
+  }
+
+  function hideAuthGate() {
+    $('auth-gate').classList.add('hidden');
+  }
+
+  async function initializeAuthentication() {
+    if (!window.isSecureContext || !window.crypto || !crypto.subtle || !window.indexedDB) {
+      showAuthGate('浏览器不支持安全签名', '需要支持 Web Crypto 与 IndexedDB 的现代浏览器，并通过 127.0.0.1 本机地址访问。');
+      return false;
+    }
+    showAuthGate(
+      initialPairingToken ? '正在建立签名身份' : '正在验证设备签名',
+      initialPairingToken ? '正在生成仅保存在本浏览器的 P-256 私钥。' : '正在检查此浏览器的签名密钥。',
+    );
+    try {
+      const status = await publicApi('/api/auth/status');
+      let credential = await readStoredCredential();
+      if (initialPairingToken) {
+        if (!credential || !credential.privateKey || !credential.publicKey || !credential.keyId) {
+          credential = await generateCredential();
+        }
+        const paired = await publicApi('/api/auth/pair', {
+          method: 'POST',
+          body: JSON.stringify({
+            pairingToken: initialPairingToken,
+            publicKey: credential.publicKey,
+            keyId: credential.keyId,
+          }),
+        });
+        if (paired.keyId !== credential.keyId) throw new Error('服务端返回的签名身份不匹配');
+        await storeCredential(credential);
+        authCredential = credential;
+        hideAuthGate();
+        return true;
+      }
+      if (!status.paired) {
+        showAuthGate('需要首次配对', '请从 ApkeSU 软件管理器的“网页管理器”入口打开本页面。', true);
+        return false;
+      }
+      if (!credential || credential.keyId !== status.keyId || !credential.privateKey) {
+        await clearStoredCredential().catch(() => {});
+        showAuthGate('此浏览器未获授权', '签名密钥不存在或已被撤销，请从 ApkeSU 重新打开网页管理器完成配对。', true);
+        return false;
+      }
+      authCredential = credential;
+      hideAuthGate();
+      return true;
+    } catch (error) {
+      showAuthGate('签名鉴权失败', errorMessage(error), true);
+      return false;
     }
   }
 
@@ -477,7 +678,7 @@
         metamodule ? '<span class="badge accent">META</span>' : '',
       ].join('');
       const primaryActions = [
-        webui ? `<button class="chip-action" type="button" data-webui="${encodedId}">打开 WebUI</button>` : '',
+        webui ? '<span class="badge">WebUI 仅限软件管理器</span>' : '',
         action ? `<button class="chip-action" type="button" data-module="${encodedId}" data-action="action">执行</button>` : '',
       ].join('');
       const wallpaper = assetMeta('modulewall', id);
@@ -903,14 +1104,12 @@
   }
 
   function openStealthDialog(enableAfterSave) {
-    const stealth = state.settings && state.settings.stealth || {};
-    const code = stealth.code || '*#*#4211#*#*';
     const warning = enableAfterSave
       ? '<div class="notice warn"><b>启用后软件管理器会伪装为未安装</b><span>超级用户、模块、KPM 与设置页面会隐藏。之后只能在网页管理器输入密令或通过拨号密令关闭。</span></div>'
       : '';
     openDialog(
       enableAfterSave ? '启用隐身模式' : '设置隐身密令',
-      `${warning}<label class="field"><span>密令</span><input id="stealth-code-input" type="text" autocomplete="off" value="${esc(code)}" aria-label="隐身密令" autofocus></label><p class="sub">密令不限制长度或字符；使用拨号关闭时输入 *#*#密令#*#*。</p>`,
+      `${warning}<label class="field"><span>新密令${enableAfterSave ? '（留空则保留当前密令）' : ''}</span><input id="stealth-code-input" type="password" autocomplete="new-password" value="" aria-label="隐身密令" autofocus></label><p class="sub">服务不会把当前密令返回到网页。密令不限制长度或字符；使用拨号关闭时输入 *#*#密令#*#*。</p>`,
       '<button id="stealth-save" class="btn primary" type="button">保存</button><button class="btn" type="button" data-close-dialog>取消</button>',
     );
     $('stealth-save').addEventListener('click', () => saveStealth(enableAfterSave));
@@ -954,7 +1153,7 @@
   async function saveStealth(enableAfterSave) {
     const input = $('stealth-code-input');
     const code = input.value.trim();
-    if (!stealthCodeIsValid(code)) {
+    if (!stealthCodeIsValid(code) && !enableAfterSave) {
       notify('密令不能为空', true, 4000);
       input.focus();
       return;
@@ -963,9 +1162,11 @@
     const button = $('stealth-save');
     setBusy(button, true);
     try {
+      const payload = { enabled: enableAfterSave || currentEnabled };
+      if (code) payload.code = code;
       await api('/api/stealth', {
         method: 'POST',
-        body: JSON.stringify({ enabled: enableAfterSave || currentEnabled, code }),
+        body: JSON.stringify(payload),
       });
       closeDialog();
       notify(enableAfterSave ? '隐身模式已启用' : '隐身密令已保存');
@@ -1143,7 +1344,7 @@
       : `未启用${stealth.codeBackedUp ? ' · 密令备份仍保留' : ''}`;
     $('stealth-toggle').checked = Boolean(stealth.enabled);
     $('stealth-toggle').disabled = false;
-    $('stealth-code-detail').textContent = stealth.code || '*#*#4211#*#*';
+    $('stealth-code-detail').textContent = stealth.codeBackedUp ? '已安全保存（网页不回显）' : '尚未备份';
     renderManagerSettings(data.manager, data.managerSettingsError || '');
     loadDynamicManagerSummary().catch(() => {});
     renderAssetSettings();
@@ -1785,7 +1986,10 @@
       return;
     }
     const webuiButton = event.target.closest('[data-webui]');
-    if (webuiButton) { window.location.assign(`/webui/${webuiButton.dataset.webui}/`); return; }
+    if (webuiButton) {
+      notify('为防止模块网页窃取管理签名，请在 ApkeSU 软件管理器内打开模块 WebUI', true, 6000);
+      return;
+    }
     const moduleButton = event.target.closest('[data-module]');
     if (moduleButton) { runModuleAction(moduleButton); return; }
     const kpmButton = event.target.closest('[data-kpm-id]');
@@ -1839,6 +2043,12 @@
     loadFeatures().catch(() => {}).finally(() => setBusy(event.currentTarget, false));
   });
   $('install-pwa-settings').addEventListener('click', installPwa);
+  $('auth-retry').addEventListener('click', () => {
+    showAuthGate('正在重新验证', '正在检查浏览器签名密钥。');
+    initializeAuthentication().then((ready) => {
+      if (ready) refreshAll(false);
+    });
+  });
   $('stealth-code-edit').addEventListener('click', () => openStealthDialog(false));
   $('manager-home-title-edit').addEventListener('click', openManagerHomeTitleDialog);
   $('dynamic-manager-open').addEventListener('click', openDynamicManagerDialog);
@@ -1911,7 +2121,10 @@
   const initialView = (location.hash || '').slice(1);
   const openSusfsOnLoad = initialView === 'susfs';
   setView(openSusfsOnLoad ? 'tools' : (initialView || 'home'), false);
-  refreshAll(false).then(() => {
-    if (openSusfsOnLoad) openSusfsManagement();
+  initializeAuthentication().then((ready) => {
+    if (!ready) return;
+    refreshAll(false).then(() => {
+      if (openSusfsOnLoad) openSusfsManagement();
+    });
   });
 })();
